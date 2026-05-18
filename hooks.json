@@ -1,0 +1,370 @@
+{
+    "hookConfigs": {
+        "api": [
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getImei",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getSubscriberId",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getLine1Number",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getNetworkOperatorName",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getNetworkCountryIso",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getCellLocation",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "getAllCellInfo",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "android.os.Debug",
+                "method": "isDebuggerConnected",
+                "thisObject": false,
+                "type": "fingerprint"
+            },
+            {
+                "class_name": "dalvik.system.BaseDexClassLoader",
+                "method": "findClass",
+                "thisObject": false,
+                "type": "dex"
+            },
+            {
+                "class_name": "dalvik.system.BaseDexClassLoader",
+                "method": "findResource",
+                "thisObject": false,
+                "type": "dex"
+            },
+            {
+                "class_name": "dalvik.system.BaseDexClassLoader",
+                "method": "findResources",
+                "thisObject": false,
+                "type": "dex"
+            },
+            {
+                "class_name": "dalvik.system.BaseDexClassLoader",
+                "method": "findLibrary",
+                "thisObject": false,
+                "type": "dex"
+            },
+            {
+                "class_name": "android.app.NotificationManager",
+                "method": "notify",
+                "thisObject": false,
+                "type": "generic"
+            },
+            {
+                "class_name": "android.telephony.TelephonyManager",
+                "method": "listen",
+                "thisObject": false,
+                "type": "generic"
+            },
+            {
+                "class_name": "android.util.Base64",
+                "method": "decode",
+                "thisObject": false,
+                "type": "generic"
+            },
+            {
+                "class_name": "android.util.Base64",
+                "method": "encode",
+                "thisObject": false,
+                "type": "generic"
+            },
+            {
+                "class_name": "android.util.Base64",
+                "method": "encodeToString",
+                "thisObject": false,
+                "type": "generic"
+            },
+            {
+                "class_name": "android.accounts.AccountManager",
+                "method": "getAccountsByType",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.accounts.AccountManager",
+                "method": "getAccounts",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.location.Location",
+                "method": "getLatitude",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.location.Location",
+                "method": "getLongitude",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.media.MediaRecorder",
+                "method": "start",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.app.ApplicationPackageManager",
+                "method": "getInstalledPackages",
+                "thisObject": false,
+                "type": "content"
+            },
+            {
+                "class_name": "android.app.ActivityManager",
+                "method": "getRunningAppProcesses",
+                "thisObject": false,
+                "type": "binder"
+            },
+            {
+                "class_name": "android.app.ActivityManager",
+                "method": "getRunningTasks",
+                "thisObject": false,
+                "type": "binder"
+            },
+            {
+                "class_name": "dalvik.system.DexFile",
+                "method": "openDexFile",
+                "thisObject": false,
+                "type": "dex"
+            },
+            {
+                "class_name": "android.os.PowerManager",
+                "method": "newWakeLock",
+                "thisObject": false,
+                "type": "binder"
+            },
+            {
+                "class_name": "android.content.res.AssetManager",
+                "method": "open",
+                "thisObject": false,
+                "type": "file"
+            },
+            {
+                "class_name": "android.content.res.AssetManager",
+                "method": "openNonAssetFd",
+                "thisObject": false,
+                "type": "file"
+            }
+        ],
+        "uprobes": [
+            {
+                "lib_path": "/system/lib64/libbinder_ndk.so",
+                "sym_name": "AIBinder_new",
+                "offset": "",
+                "args_types": [ ]
+            },
+            {
+                "lib_path": "/system/lib64/libcamera2ndk.so",
+                "sym_name": "ACameraManager_openCamera",
+                "offset": "",
+                "args_types": [ "void*", "char*" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libc.so",
+                "sym_name": "openat",
+                "offset": "",
+                "args_types": [ "int", "char*", "int", "mode_t" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libc.so",
+                "sym_name": "open",
+                "offset": "",
+                "args_types": [ "char*", "int" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libc.so",
+                "sym_name": "unlinkat",
+                "offset": "",
+                "args_types": [ "int", "char*", "int" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libc.so",
+                "sym_name": "execveat",
+                "offset": "",
+                "args_types": [ "int", "char*" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libc.so",
+                "sym_name": "printf",
+                "offset": "",
+                "args_types": [ "char*" ]
+            },
+            {
+                "lib_path": "/apex/com.android.runtime/lib64/bionic/libdl.so",
+                "sym_name": "dlopen",
+                "offset": "",
+                "args_types": [ "char*", "int" ]
+            }
+        ],
+        "syscalls": [
+            {
+                "name": "execve"
+            },
+            {
+                "name": "execveat"
+            },
+            {
+                "name": "fork"
+            },
+            {
+                "name": "vfork"
+            },
+            {
+                "name": "clone"
+            },
+            {
+                "name": "open"
+            },
+            {
+                "name": "openat"
+            },
+            {
+                "name": "bpf"
+            },
+            {
+                "name": "perf_event_open"
+            },
+            {
+                "name": "unlink"
+            },
+            {
+                "name": "unlinkat"
+            },
+            {
+                "name": "symlink"
+            },
+            {
+                "name": "symlinkat"
+            },
+            {
+                "name": "chmod"
+            },
+            {
+                "name": "fchmod"
+            },
+            {
+                "name": "fchmodat"
+            },
+            {
+                "name": "chown"
+            },
+            {
+                "name": "fchown"
+            },
+            {
+                "name": "fchownat"
+            },
+            {
+                "name": "lchown"
+            },
+            {
+                "name": "ptrace"
+            },
+            {
+                "name": "setuid"
+            },
+            {
+                "name": "setgid"
+            },
+            {
+                "name": "setreuid"
+            },
+            {
+                "name": "setregid"
+            },
+            {
+                "name": "setfsuid"
+            },
+            {
+                "name": "setfsgid"
+            },
+            {
+                "name": "kill"
+            },
+            {
+                "name": "tkill"
+            },
+            {
+                "name": "tgkill"
+            },
+            {
+                "name": "mknod"
+            },
+            {
+                "name": "mknodat"
+            },
+            {
+                "name": "mount"
+            },
+            {
+                "name": "umount"
+            },
+            {
+                "name": "init_module"
+            },
+            {
+                "name": "finit_module"
+            },
+            {
+                "name": "delete_module"
+            },
+            {
+                "name": "connect"
+            },
+            {
+                "name": "listen"
+            },
+            {
+                "name": "process_vm_readv"
+            },
+            {
+                "name": "process_vm_writev"
+            },
+            {
+                "name": "inotify_add_watch"
+            },
+            {
+                "name": "memfd_create"
+            }
+        ],
+        "kprobes": [
+            {
+                "name": "sched_process_exit"
+            },
+            {
+                "name": "security_bprm_check"
+            }
+        ]
+    },
+    "trace": true
+}
