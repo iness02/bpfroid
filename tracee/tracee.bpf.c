@@ -2523,6 +2523,62 @@ int BPF_KPROBE(trace_mprotect_alert)
     return 0;
 }
 
+// Tail call handler for sys_exit on openat: fires after the syscall returns,
+// catching ALL denied write-opens regardless of where in the kernel the denial occurred
+// (EROFS from mnt_want_write, EACCES from inode_permission, EPERM, etc.)
+SEC("raw_tracepoint/openat_exit_tail")
+int trace_sys_openat_exit(void *ctx)
+{
+    args_t args = {};
+    u64 retval;
+    bool delete_args = true;
+
+    if (load_args(&args, delete_args, SYS_OPENAT) != 0)
+        return 0;
+
+    if (load_retval(&retval, SYS_OPENAT) != 0)
+        return 0;
+    del_retval(SYS_OPENAT);
+
+    if (!event_chosen(WRITE_FORBIDDEN_ALERT))
+        return 0;
+
+    long ret = (long)retval;
+    if (ret >= 0)  // open succeeded
+        return 0;
+
+    // args[2] = openat flags; check for write intent (O_WRONLY=1, O_RDWR=2)
+    int flags = (int)args.args[2];
+    if (!(flags & 3))  // neither O_WRONLY nor O_RDWR
+        return 0;
+
+    buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+    if (submit_p == NULL)
+        return 0;
+    set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+
+    context_t context = init_and_save_context(ctx, submit_p, WRITE_FORBIDDEN_ALERT, 4 /*argnum*/, ret);
+
+    u64 *tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+    if (!tags)
+        return -1;
+
+    alert_t alert = {.ts = context.ts, .msg = ALERT_WRITE_FORBIDDEN, .payload = 0};
+    save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
+
+    // args[1] = user-space filename pointer (const char __user *)
+    save_str_to_buf(submit_p, (void *)args.args[1], DEC_ARG(1, *tags));
+
+    // dev and inode are not available at syscall level; emit zeros
+    dev_t zero_dev = 0;
+    unsigned long zero_inode = 0;
+    save_to_submit_buf(submit_p, &zero_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
+    save_to_submit_buf(submit_p, &zero_inode, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
+
+    events_perf_submit(ctx);
+    return 0;
+}
+
 SEC("kprobe/security_file_permission")
 int BPF_KPROBE(trace_security_file_permission_entry)
 {

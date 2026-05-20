@@ -118,6 +118,7 @@ const (
 	tracepoint
 	rawTracepoint
 	uprobe
+	tailCallProg // loaded into a tail-call map; not directly attached
 )
 
 type probe struct {
@@ -528,7 +529,7 @@ var EventsIDToEvent = map[int32]EventConfig{
 	GenericApiUprobeEventID:    {ID: GenericApiUprobeEventID, ID32Bit: sys32undefined, Name: "generic_api_uprobe", Probes: []probe{}, Sets: []string{}},
 	UidChangedAlertEventID:     {ID: UidChangedAlertEventID, ID32Bit: sys32undefined, Name: "uid_changed_alert", Probes: []probe{}, Sets: []string{}},
 	WriteAlertEventID:          {ID: WriteAlertEventID, ID32Bit: sys32undefined, Name: "write_alert", Probes: []probe{}, Sets: []string{}},
-	WriteForbiddenAlertEventID: {ID: WriteForbiddenAlertEventID, ID32Bit: sys32undefined, Name: "write_forbidden_alert", Probes: []probe{{event: "security_file_permission", attach: kprobe, fn: "trace_security_file_permission_entry"}, {event: "security_file_permission", attach: kretprobe, fn: "trace_ret_security_file_permission"}}, Sets: []string{}},
+	WriteForbiddenAlertEventID: {ID: WriteForbiddenAlertEventID, ID32Bit: sys32undefined, Name: "write_forbidden_alert", Probes: []probe{{event: "openat_exit", attach: tailCallProg, fn: "trace_sys_openat_exit"}, {event: "security_file_permission", attach: kprobe, fn: "trace_security_file_permission_entry"}, {event: "security_file_permission", attach: kretprobe, fn: "trace_ret_security_file_permission"}}, Sets: []string{}},
 }
 
 // EventsIDToParams is list of the parameters (name and type) used by the events

@@ -106,6 +106,7 @@ func main() {
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.MemProtAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.UidChangedAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.WriteAlertEventID)
+				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.WriteForbiddenAlertEventID)
 			}
 			bpfFile, err := getBPFObject()
 			if err != nil {

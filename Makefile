@@ -10,13 +10,17 @@ CMD_GIT ?= git
 CMD_CHECKSUM ?= sha256sum
 CMD_GITHUB ?= gh
 # environment:
+ARCH ?= arm64
+KERN_HEADERS ?= /headers
+KERN_SRC_PATH ?= /headers
+KERN_BLD_PATH ?= /headers
 ARCH_UNAME := $(shell uname -m)
-ARCH ?= $(ARCH_UNAME:aarch64=arm64)
+#ARCH ?= $(ARCH_UNAME:aarch64=arm64)
 KERN_RELEASE ?= $(shell uname -r)
 #KERN_HEADERS := /home/yaniv/src/thesis/android-kernel/goldfish
 #KERN_HEADERS := /home/yaniv/src/thesis/pixel3a/android-kernel/headers/kernel-headers
-KERN_BLD_PATH ?= $(if $(KERN_HEADERS),$(KERN_HEADERS),/lib/modules/$(KERN_RELEASE)/build)
-KERN_SRC_PATH ?= $(if $(KERN_HEADERS),$(KERN_HEADERS),$(if $(wildcard /lib/modules/$(KERN_RELEASE)/source),/lib/modules/$(KERN_RELEASE)/source,$(KERN_BLD_PATH)))
+#KERN_BLD_PATH ?= $(if $(KERN_HEADERS),$(KERN_HEADERS),/headers)
+#KERN_SRC_PATH ?= $(if $(KERN_HEADERS),$(KERN_HEADERS),$(if $(wildcard /lib/modules/$(KERN_RELEASE)/source),/lib/modules/$(KERN_RELEASE)/source,$(KERN_BLD_PATH)))
 VERSION ?= $(if $(RELEASE_TAG),$(RELEASE_TAG),$(shell $(CMD_GIT) describe --tags))
 # inputs and outputs:
 OUT_DIR ?= dist
@@ -47,7 +51,7 @@ $(OUT_DIR):
 .PHONY: build
 build: $(OUT_BIN)
 
-go_env := GOOS=linux GOARCH=$(ARCH:x86_64=amd64) CC=$(CMD_CLANG) CGO_CFLAGS="-I $(abspath $(LIBBPF_HEADERS))" CGO_LDFLAGS="$(abspath $(LIBBPF_OBJ))"
+go_env := CGO_ENABLED=1 GOOS=linux GOARCH=$(ARCH:x86_64=amd64) CC=$(if $(filter arm64,$(ARCH)),aarch64-linux-gnu-gcc,$(CMD_CLANG)) CGO_CFLAGS="-I $(abspath $(LIBBPF_HEADERS))" CGO_LDFLAGS="$(abspath $(LIBBPF_OBJ))"
 ifndef DOCKER
 $(OUT_BIN): $(LIBBPF_HEADERS) $(LIBBPF_OBJ) $(filter-out *_test.go,$(GO_SRC)) $(BPF_BUNDLE) | $(OUT_DIR)
 	$(go_env) go build -v -o $(OUT_BIN) \
@@ -79,16 +83,19 @@ $(BPF_BUNDLE): $(BPF_SRC) $(LIBBPF_HEADERS)/bpf $(BPF_HEADERS)
 .PHONY: bpf
 bpf: $(OUT_BPF)
 
-linux_arch := $(ARCH:x86_64=x86)
+linux_arch := $(if $(filter arm64 aarch64,$(ARCH)),arm64,$(ARCH:x86_64=x86))
 ifndef DOCKER
 $(OUT_BPF): $(BPF_SRC) $(LIBBPF_HEADERS) | $(OUT_DIR) $(bpf_compile_tools)
 	@v=$$($(CMD_CLANG) --version); test $$(echo $${v#*version} | head -n1 | cut -d '.' -f1) -ge '9' || (echo 'required minimum clang version: 9' ; false)
 	$(CMD_CLANG) -S \
 		-D__BPF_TRACING__ \
-		-D__KERNEL__ \
+		-D__KERNEL__ -D__NO_INLINE__ \
 		-D__TARGET_ARCH_$(linux_arch) \
 		-I $(LIBBPF_HEADERS)/bpf \
-		-include $(KERN_SRC_PATH)/include/linux/kconfig.h \
+		-include /headers/include/linux/kconfig.h \
+                -include /headers/include/generated/autoconf.h \
+                -include /tracee/bpf_stubs/bpf_compat.h \
+                -I /tracee/bpf_stubs \
 		-I $(KERN_SRC_PATH)/arch/$(linux_arch)/include \
 		-I $(KERN_SRC_PATH)/arch/$(linux_arch)/include/uapi \
 		-I $(KERN_BLD_PATH)/arch/$(linux_arch)/include/generated \
@@ -113,6 +120,7 @@ $(OUT_BPF): $(BPF_SRC) $(LIBBPF_HEADERS) | $(OUT_DIR) $(bpf_compile_tools)
 		-fno-jump-tables \
 		-fno-unwind-tables \
 		-fno-asynchronous-unwind-tables \
+		$(EXTRA_CFLAGS) \
 		-xc \
 		-nostdinc \
 		-O2 -emit-llvm -c -g $< -o $(@:.o=.ll)

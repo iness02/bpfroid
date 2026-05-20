@@ -1292,7 +1292,7 @@ func (t *Tracee) populateBPFMaps() error {
 	}
 
 	sysEnterTailsBPFMap, _ := t.bpfModule.GetMap("sys_enter_tails")
-	//sysExitTailsBPFMap := t.bpfModule.GetMap("sys_exit_tails")
+	sysExitTailsBPFMap, _ := t.bpfModule.GetMap("sys_exit_tails")
 	paramsTypesBPFMap, _ := t.bpfModule.GetMap("params_types_map")
 	paramsNamesBPFMap, _ := t.bpfModule.GetMap("params_names_map")
 	for e := range t.eventsToTrace {
@@ -1320,6 +1320,14 @@ func (t *Tracee) populateBPFMaps() error {
 				return fmt.Errorf("error loading BPF program %s: %v", probFnName, err)
 			}
 			sysEnterTailsBPFMap.Update(e, int32(prog.GetFd()))
+		}
+
+		// Register write_forbidden_alert openat exit tail call
+		if e == WriteForbiddenAlertEventID {
+			prog, err := t.bpfModule.GetProgram("trace_sys_openat_exit")
+			if err == nil && prog != nil {
+				sysExitTailsBPFMap.Update(int32(OpenatEventID), int32(prog.GetFd()))
+			}
 		}
 	}
 
@@ -1415,6 +1423,8 @@ func (t *Tracee) initBPF(bpfObjectPath string) error {
 			case rawTracepoint:
 				tpEvent := strings.Split(probe.event, ":")[1]
 				_, err = prog.AttachRawTracepoint(tpEvent)
+			case tailCallProg:
+				// loaded into a tail-call map by populateBPFMaps; no direct attachment
 			}
 			if err != nil {
 				return fmt.Errorf("error attaching event %s: %v", probe.event, err)
