@@ -273,7 +273,7 @@ typedef struct alert {
     u64 ts;     // Timestamp
     u32 msg;    // Encoded message
     u8 payload; // Non zero if payload is sent to userspace
-} alert_t;
+} __attribute__((packed)) alert_t;
 
 /*================================ KERNEL STRUCTS =============================*/
 
@@ -2563,18 +2563,21 @@ int trace_sys_openat_exit(void *ctx)
     if (!tags)
         return -1;
 
+    u8 argnum = 0;
     alert_t alert = {.ts = context.ts, .msg = ALERT_WRITE_FORBIDDEN, .payload = 0};
-    save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
+    argnum += save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
 
     // args[1] = user-space filename pointer (const char __user *)
-    save_str_to_buf(submit_p, (void *)args.args[1], DEC_ARG(1, *tags));
+    argnum += save_str_to_buf(submit_p, (void *)args.args[1], DEC_ARG(1, *tags));
 
     // dev and inode are not available at syscall level; emit zeros
     dev_t zero_dev = 0;
     unsigned long zero_inode = 0;
-    save_to_submit_buf(submit_p, &zero_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
-    save_to_submit_buf(submit_p, &zero_inode, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
+    argnum += save_to_submit_buf(submit_p, &zero_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
+    argnum += save_to_submit_buf(submit_p, &zero_inode, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
 
+    context.argnum = argnum;
+    save_context_to_buf(submit_p, (void*)&context);
     events_perf_submit(ctx);
     return 0;
 }
@@ -2629,8 +2632,9 @@ int BPF_KPROBE(trace_ret_security_file_permission)
         return -1;
     }
 
+    u8 argnum = 0;
     alert_t alert = {.ts = context.ts, .msg = ALERT_WRITE_FORBIDDEN, .payload = 0};
-    save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
+    argnum += save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
 
     // Get per-cpu string buffer
     buf_t *string_p = get_buf(STRING_BUF_IDX);
@@ -2641,10 +2645,12 @@ int BPF_KPROBE(trace_ret_security_file_permission)
     if (off == NULL)
         return -1;
 
-    save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(1, *tags));
-    save_to_submit_buf(submit_p, &s_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
-    save_to_submit_buf(submit_p, &inode_nr, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
+    argnum += save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(1, *tags));
+    argnum += save_to_submit_buf(submit_p, &s_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
+    argnum += save_to_submit_buf(submit_p, &inode_nr, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
 
+    context.argnum = argnum;
+    save_context_to_buf(submit_p, (void*)&context);
     events_perf_submit(ctx);
     return 0;
 }
