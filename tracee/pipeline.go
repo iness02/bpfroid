@@ -182,6 +182,30 @@ func (t *Tracee) prepareEventForPrint(done <-chan struct{}, in <-chan RawEvent) 
 				}
 			}
 
+			// For WriteForbiddenAlertEventID, format as single combined message
+			if rawEvent.Ctx.EventID == WriteForbiddenAlertEventID {
+				msg := ""
+				pathname := ""
+				for i, meta := range argMetas {
+					if meta.Name == "alert" {
+						if s, ok := args[i].(string); ok {
+							msg = s
+						}
+					}
+					if meta.Name == "pathname" {
+						if s, ok := args[i].(string); ok {
+							pathname = s
+						}
+					}
+				}
+				combined := msg
+				if pathname != "" {
+					combined += " pathname: " + pathname
+				}
+				args = []interface{}{combined}
+				argMetas = []external.ArgMeta{{Name: "", Type: "string"}}
+			}
+
 			// Add stack trace if needed
 			var StackAddresses []uint64
 			if t.config.Output.StackAddresses {

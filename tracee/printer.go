@@ -227,9 +227,17 @@ func (p tableEventPrinter) Print(event external.Event) {
 	}
 	for i, arg := range event.Args {
 		if i == 0 {
-			fmt.Fprintf(p.out, "%s: %v", arg.Name, arg.Value)
+			if arg.Name == "" {
+				fmt.Fprintf(p.out, "%v", arg.Value)
+			} else {
+				fmt.Fprintf(p.out, "%s: %v", arg.Name, arg.Value)
+			}
 		} else {
-			fmt.Fprintf(p.out, ", %s: %v", arg.Name, arg.Value)
+			if arg.Name == "" {
+				fmt.Fprintf(p.out, ", %v", arg.Value)
+			} else {
+				fmt.Fprintf(p.out, ", %s: %v", arg.Name, arg.Value)
+			}
 		}
 	}
 	fmt.Fprintln(p.out)

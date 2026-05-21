@@ -898,6 +898,49 @@ static __always_inline int save_str_to_buf(buf_t *submit_p, void *ptr, u8 tag)
     return 0;
 }
 
+static __always_inline int save_user_str_to_buf(buf_t *submit_p, void *ptr, u8 tag)
+{
+    u32* off = get_buf_off(SUBMIT_BUF_IDX);
+    if (off == NULL)
+        return 0;
+    if (*off > MAX_PERCPU_BUFSIZE - MAX_STRING_SIZE - sizeof(int))
+        return 0;
+
+    u8 type = STR_T;
+    bpf_probe_read(&(submit_p->buf[*off & (MAX_PERCPU_BUFSIZE-1)]), 1, &type);
+
+    *off += 1;
+
+    if (tag != TAG_NONE) {
+        int rc = bpf_probe_read(&(submit_p->buf[*off & (MAX_PERCPU_BUFSIZE-1)]), 1, &tag);
+        if (rc != 0) {
+            *off -= 1;
+            return 0;
+        }
+        *off += 1;
+    }
+
+    if (*off > MAX_PERCPU_BUFSIZE - MAX_STRING_SIZE - sizeof(int)) {
+        *off -= 2;
+        return 0;
+    }
+
+    // Use bpf_probe_read_user_str for user-space pointers (handles ARM64 PAN)
+    int sz = bpf_probe_read_user_str(&(submit_p->buf[*off + sizeof(int)]), MAX_STRING_SIZE, ptr);
+    if (sz > 0) {
+        if (*off > MAX_PERCPU_BUFSIZE - sizeof(int)) {
+            *off -= 2;
+            return 0;
+        }
+        bpf_probe_read(&(submit_p->buf[*off]), sizeof(int), &sz);
+        *off += sz + sizeof(int);
+        return 1;
+    }
+
+    *off -= 2;
+    return 0;
+}
+
 static __always_inline int save_str_arr_to_buf(buf_t *submit_p, const char __user *const __user *ptr, u8 tag)
 {
     u8 elem_num = 0;
@@ -2568,7 +2611,7 @@ int trace_sys_openat_exit(void *ctx)
     argnum += save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
 
     // args[1] = user-space filename pointer (const char __user *)
-    argnum += save_str_to_buf(submit_p, (void *)args.args[1], DEC_ARG(1, *tags));
+    argnum += save_user_str_to_buf(submit_p, (void *)args.args[1], DEC_ARG(1, *tags));
 
     // dev and inode are not available at syscall level; emit zeros
     dev_t zero_dev = 0;
