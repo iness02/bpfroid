@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 	"text/template"
 
 
@@ -68,9 +70,39 @@ func initBootTime() {
 	bootTime = time.Now()
 }
 
+var deviceLocation *time.Location
+
+func initDeviceLocation() {
+	out, err := exec.Command("getprop", "persist.sys.timezone").Output()
+	if err == nil {
+		tzName := strings.TrimSpace(string(out))
+
+		if tzName != "" {
+			loc, err := time.LoadLocation(tzName)
+			if err == nil {
+				deviceLocation = loc
+				return
+			}
+		}
+	}
+
+	// fallback: check TZ environment variable
+	if tzEnv := os.Getenv("TZ"); tzEnv != "" {
+		loc, err := time.LoadLocation(tzEnv)
+		if err == nil {
+			deviceLocation = loc
+			return
+		}
+	}
+
+	deviceLocation = time.Local
+}
+
 func newEventPrinter(kind string, containerMode bool, eot bool, out io.WriteCloser, err io.WriteCloser) (eventPrinter, error) {
 	if bootTime.IsZero() {
 	initBootTime()
+	initDeviceLocation()
+
 }
 	var res eventPrinter
 	var initError error
@@ -182,15 +214,15 @@ func (p tableEventPrinter) Print(event external.Event) {
 	formattedTime := formatWallTime(event.Timestamp)
 	if p.verbose {
 		if p.containerMode {
-			fmt.Fprintf(p.out, "%-18s %-14f %-16s %-12d %-12d %-6d %-16s %-7d/%-7d %-7d/%-7d %-7d/%-7d %-16d %-20s ",p.deviceID, formattedTime, event.HostName, event.MountNS, event.PIDNS, event.UserID, event.ProcessName, event.ProcessID, event.HostProcessID, event.ThreadID, event.HostThreadID, event.ParentProcessID, event.ParentProcessID, event.ReturnValue, event.EventName)
+			fmt.Fprintf(p.out, "%-18s %-24s %-16s %-12d %-12d %-6d %-16s %-7d/%-7d %-7d/%-7d %-7d/%-7d %-16d %-20s ",p.deviceID, formattedTime, event.HostName, event.MountNS, event.PIDNS, event.UserID, event.ProcessName, event.ProcessID, event.HostProcessID, event.ThreadID, event.HostThreadID, event.ParentProcessID, event.ParentProcessID, event.ReturnValue, event.EventName)
 		} else {
-			fmt.Fprintf(p.out, "%-18s %-14f %-16s %-12d %-12d %-6d %-16s %-7d %-7d %-7d %-16d %-20s ", p.deviceID, formattedTime, event.HostName, event.MountNS, event.PIDNS, event.UserID, event.ProcessName, event.ProcessID, event.ThreadID, event.ParentProcessID, event.ReturnValue, event.EventName)
+			fmt.Fprintf(p.out, "%-18s %-24s %-16s %-12d %-12d %-6d %-16s %-7d %-7d %-7d %-16d %-20s ", p.deviceID, formattedTime, event.HostName, event.MountNS, event.PIDNS, event.UserID, event.ProcessName, event.ProcessID, event.ThreadID, event.ParentProcessID, event.ReturnValue, event.EventName)
 		}
 	} else {
 		if p.containerMode {
-			fmt.Fprintf(p.out, "%-18s %-14f %-16s %-6d %-16s %-7d/%-7d %-7d/%-7d %-16d %-20s ", p.deviceID, formattedTime, event.HostName, event.UserID, event.ProcessName, event.ProcessID, event.HostProcessID, event.ThreadID, event.HostThreadID, event.ReturnValue, event.EventName)
+			fmt.Fprintf(p.out, "%-18s %-24s %-16s %-6d %-16s %-7d/%-7d %-7d/%-7d %-16d %-20s ", p.deviceID, formattedTime, event.HostName, event.UserID, event.ProcessName, event.ProcessID, event.HostProcessID, event.ThreadID, event.HostThreadID, event.ReturnValue, event.EventName)
 		} else {
-			fmt.Fprintf(p.out, "%-18s %-14f %-6d %-16s %-7d %-7d %-16d %-20s ",p.deviceID,  formattedTime, event.UserID, event.ProcessName, event.ProcessID, event.ThreadID, event.ReturnValue, event.EventName)
+			fmt.Fprintf(p.out, "%-18s %-24s %-6d %-16s %-7d %-7d %-16d %-20s ",p.deviceID,  formattedTime, event.UserID, event.ProcessName, event.ProcessID, event.ThreadID, event.ReturnValue, event.EventName)
 		}
 	}
 	for i, arg := range event.Args {
@@ -374,5 +406,5 @@ func (p gobEventPrinter) Close() {
 func formatWallTime(tsSinceBoot float64) string {
 	sec := int64(tsSinceBoot)
 	nsec := int64((tsSinceBoot - float64(sec)) * 1e9)
-	return bootTime.Add(time.Duration(sec)*time.Second + time.Duration(nsec)).Format("2006-01-02 15:04:05.000")
+	return bootTime.In(deviceLocation).Add(time.Duration(sec)*time.Second + time.Duration(nsec)).Format("2006-01-02 15:04:05.000")
 }
