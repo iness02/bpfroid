@@ -107,6 +107,7 @@ func main() {
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.UidChangedAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.WriteAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.WriteForbiddenAlertEventID)
+				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.IpChangedAlertEventID)
 			}
 			bpfFile, err := getBPFObject()
 			if err != nil {

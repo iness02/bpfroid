@@ -134,7 +134,8 @@
 #define UID_CHANGE_ALERT         1013
 #define WRITE_ALERT              1014
 #define WRITE_FORBIDDEN_ALERT    1015
-#define MAX_EVENT_ID             1016
+#define IP_CHANGED_ALERT         1016
+#define MAX_EVENT_ID             1017
 
 #define CONFIG_SHOW_SYSCALL         1
 #define CONFIG_EXEC_ENV             2
@@ -2696,6 +2697,234 @@ int BPF_KPROBE(trace_ret_security_file_permission)
     save_context_to_buf(submit_p, (void*)&context);
     events_perf_submit(ctx);
     return 0;
+}
+
+/*=============================== IP ADDRESS CHANGE DETECTION ================*/
+
+// IP address change operation types
+#define IP_OP_ADD    1
+#define IP_OP_DEL    2
+
+// Structure to hold IPv4 interface address info (matching kernel's in_ifaddr)
+struct in_ifaddr_minimal {
+    void *hash_next;           // struct hlist_node hash
+    void *ifa_next;            // struct in_ifaddr *ifa_next
+    void *ifa_dev;             // struct in_device *ifa_dev
+    void *callback_head;       // struct callback_head
+    __be32 ifa_local;          // local IP address
+    __be32 ifa_address;        // address
+    __be32 ifa_mask;           // netmask
+    __u32 ifa_rt_priority;     // route priority
+    __be32 ifa_broadcast;      // broadcast address
+    unsigned char ifa_scope;   // scope
+    unsigned char ifa_prefixlen; // prefix length
+    __u32 ifa_flags;           // flags
+    char ifa_label[16];        // interface label/name
+};
+
+// Structure for in_device to get interface name
+struct in_device_minimal {
+    void *dev;                 // struct net_device *dev
+};
+
+// Minimal net_device structure to get interface name
+struct net_device_minimal {
+    char name[16];             // IFNAMSIZ = 16
+};
+
+// Convert big-endian 32-bit IP to string in kernel-space buffer
+// Returns: number of characters written
+static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
+{
+    // IP is in network byte order (big-endian), convert to host byte order
+    unsigned char b0 = (ip >> 0) & 0xFF;
+    unsigned char b1 = (ip >> 8) & 0xFF;
+    unsigned char b2 = (ip >> 16) & 0xFF;
+    unsigned char b3 = (ip >> 24) & 0xFF;
+    
+    // Format: b0.b1.b2.b3 (but in big-endian, byte 0 is most significant)
+    // Actually ip is already __be32, so bytes are: b3.b2.b1.b0 in memory for little-endian
+    // We need to output in network order which is: byte0.byte1.byte2.byte3
+    // For __be32 on little endian: byte at address is most significant
+    
+    int i = 0;
+    unsigned char bytes[4];
+    bytes[0] = b0;
+    bytes[1] = b1;
+    bytes[2] = b2;
+    bytes[3] = b3;
+    
+    // Simple conversion - we store as "X.X.X.X" format
+    // For eBPF we need to be careful with loops, so unroll
+    unsigned char val;
+    int j;
+    
+    #pragma unroll
+    for (j = 0; j < 4; j++) {
+        val = bytes[j];
+        
+        // Convert each octet to string
+        if (val >= 100) {
+            if (i < buf_size - 1) buf[i++] = '0' + (val / 100);
+            val = val % 100;
+            if (i < buf_size - 1) buf[i++] = '0' + (val / 10);
+            if (i < buf_size - 1) buf[i++] = '0' + (val % 10);
+        } else if (val >= 10) {
+            if (i < buf_size - 1) buf[i++] = '0' + (val / 10);
+            if (i < buf_size - 1) buf[i++] = '0' + (val % 10);
+        } else {
+            if (i < buf_size - 1) buf[i++] = '0' + val;
+        }
+        
+        // Add dot separator (except after last octet)
+        if (j < 3 && i < buf_size - 1) {
+            buf[i++] = '.';
+        }
+    }
+    
+    if (i < buf_size) buf[i] = '\0';
+    return i;
+}
+
+// Helper to submit IP change event
+static __always_inline int submit_ip_change_event(void *ctx, int op, __be32 ip_addr, char *iface_name, unsigned char prefix_len)
+{
+    if (!event_chosen(IP_CHANGED_ALERT))
+        return 0;
+
+    buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+    if (submit_p == NULL)
+        return 0;
+    set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+
+    context_t context = init_and_save_context(ctx, submit_p, IP_CHANGED_ALERT, 4 /*argnum*/, 0 /*ret*/);
+
+    u64 *tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+    if (!tags)
+        return -1;
+
+    u8 argnum = 0;
+    
+    // Arg 0: operation ("ADD" or "DEL")
+    if (op == IP_OP_ADD) {
+        argnum += save_str_to_buf(submit_p, "ADD", DEC_ARG(0, *tags));
+    } else {
+        argnum += save_str_to_buf(submit_p, "DEL", DEC_ARG(1, *tags));
+    }
+    
+    // Arg 1: IP address as string
+    char ip_str[16];  // Max IPv4 string is "255.255.255.255" = 15 chars + null
+    ip_to_str(ip_str, sizeof(ip_str), ip_addr);
+    argnum += save_str_to_buf(submit_p, ip_str, DEC_ARG(1, *tags));
+    
+    // Arg 2: interface name
+    argnum += save_str_to_buf(submit_p, iface_name, DEC_ARG(2, *tags));
+    
+    // Arg 3: prefix length
+    u32 prefix = prefix_len;
+    argnum += save_to_submit_buf(submit_p, &prefix, sizeof(u32), UINT_T, DEC_ARG(3, *tags));
+
+    context.argnum = argnum;
+    save_context_to_buf(submit_p, (void*)&context);
+    events_perf_submit(ctx);
+    return 0;
+}
+
+// Kprobe for __inet_insert_ifa - called when IPv4 address is added
+// int __inet_insert_ifa(struct in_ifaddr *ifa, struct nlmsghdr *nlh, u32 portid, struct netlink_ext_ack *extack)
+SEC("kprobe/__inet_insert_ifa")
+int BPF_KPROBE(trace_inet_insert_ifa)
+{
+    if (!should_trace())
+        return 0;
+
+    if (!event_chosen(IP_CHANGED_ALERT))
+        return 0;
+
+    // First argument is struct in_ifaddr *ifa
+    struct in_ifaddr_minimal *ifa = (struct in_ifaddr_minimal *)PT_REGS_PARM1(ctx);
+    if (ifa == NULL)
+        return 0;
+
+    // Read the IP address
+    __be32 ip_addr;
+    bpf_probe_read(&ip_addr, sizeof(ip_addr), &ifa->ifa_local);
+    
+    // Read prefix length
+    unsigned char prefix_len;
+    bpf_probe_read(&prefix_len, sizeof(prefix_len), &ifa->ifa_prefixlen);
+    
+    // Read interface label (name)
+    char iface_name[16];
+    __builtin_memset(iface_name, 0, sizeof(iface_name));
+    bpf_probe_read_str(iface_name, sizeof(iface_name), ifa->ifa_label);
+    
+    // If label is empty, try to get name from in_device->net_device
+    if (iface_name[0] == '\0') {
+        struct in_device_minimal *in_dev;
+        bpf_probe_read(&in_dev, sizeof(in_dev), &ifa->ifa_dev);
+        if (in_dev != NULL) {
+            struct net_device_minimal *netdev;
+            bpf_probe_read(&netdev, sizeof(netdev), &in_dev->dev);
+            if (netdev != NULL) {
+                bpf_probe_read_str(iface_name, sizeof(iface_name), netdev->name);
+            }
+        }
+    }
+    
+    return submit_ip_change_event(ctx, IP_OP_ADD, ip_addr, iface_name, prefix_len);
+}
+
+// Kprobe for __inet_del_ifa - called when IPv4 address is deleted
+// void __inet_del_ifa(struct in_device *in_dev, struct in_ifaddr **ifap, int destroy, struct nlmsghdr *nlh, u32 portid)
+SEC("kprobe/__inet_del_ifa")
+int BPF_KPROBE(trace_inet_del_ifa)
+{
+    if (!should_trace())
+        return 0;
+
+    if (!event_chosen(IP_CHANGED_ALERT))
+        return 0;
+
+    // First argument is struct in_device *in_dev
+    struct in_device_minimal *in_dev = (struct in_device_minimal *)PT_REGS_PARM1(ctx);
+    if (in_dev == NULL)
+        return 0;
+    
+    // Second argument is struct in_ifaddr **ifap
+    struct in_ifaddr_minimal **ifap = (struct in_ifaddr_minimal **)PT_REGS_PARM2(ctx);
+    if (ifap == NULL)
+        return 0;
+    
+    // Dereference to get the actual in_ifaddr pointer
+    struct in_ifaddr_minimal *ifa;
+    bpf_probe_read(&ifa, sizeof(ifa), ifap);
+    if (ifa == NULL)
+        return 0;
+
+    // Read the IP address
+    __be32 ip_addr;
+    bpf_probe_read(&ip_addr, sizeof(ip_addr), &ifa->ifa_local);
+    
+    // Read prefix length
+    unsigned char prefix_len;
+    bpf_probe_read(&prefix_len, sizeof(prefix_len), &ifa->ifa_prefixlen);
+    
+    // Read interface label (name)
+    char iface_name[16];
+    __builtin_memset(iface_name, 0, sizeof(iface_name));
+    bpf_probe_read_str(iface_name, sizeof(iface_name), ifa->ifa_label);
+    
+    // If label is empty, try to get name from in_device->net_device
+    if (iface_name[0] == '\0') {
+        struct net_device_minimal *netdev;
+        bpf_probe_read(&netdev, sizeof(netdev), &in_dev->dev);
+        if (netdev != NULL) {
+            bpf_probe_read_str(iface_name, sizeof(iface_name), netdev->name);
+        }
+    }
+    
+    return submit_ip_change_event(ctx, IP_OP_DEL, ip_addr, iface_name, prefix_len);
 }
 
 char LICENSE[] SEC("license") = "GPL";

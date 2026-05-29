@@ -1,33 +1,20 @@
 {
   "hookConfigs": {
-
     "api": [],
 
     "syscalls": [
-      {
-        "name": "openat"
-      },
-      {
-        "name": "open"
-      },
-      {
-        "name": "mkdir"
-      },
-      {
-        "name": "mkdirat"
-      },
-      {
-        "name": "unlink"
-      },
-      {
-        "name": "unlinkat"
-      }
+      { "name": "connect" },
+      { "name": "getsockname" },
+      { "name": "bind" },
+      { "name": "sendmsg" },
+      { "name": "sendto" }
     ],
 
     "uprobes": [],
+    
+  "kprobes": []
 
-    "kprobes": []
-  },
+    },
 
   "trace": true
 }
