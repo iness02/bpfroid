@@ -531,7 +531,7 @@ var EventsIDToEvent = map[int32]EventConfig{
 	UidChangedAlertEventID:     {ID: UidChangedAlertEventID, ID32Bit: sys32undefined, Name: "uid_changed_alert", Probes: []probe{}, Sets: []string{}},
 	WriteAlertEventID:          {ID: WriteAlertEventID, ID32Bit: sys32undefined, Name: "write_alert", Probes: []probe{}, Sets: []string{}},
 	WriteForbiddenAlertEventID: {ID: WriteForbiddenAlertEventID, ID32Bit: sys32undefined, Name: "write_forbidden_alert", Probes: []probe{{event: "openat_exit", attach: tailCallProg, fn: "trace_sys_openat_exit"}, {event: "security_file_permission", attach: kprobe, fn: "trace_security_file_permission_entry"}, {event: "security_file_permission", attach: kretprobe, fn: "trace_ret_security_file_permission"}}, Sets: []string{}},
-	IpChangedAlertEventID:      {ID: IpChangedAlertEventID, ID32Bit: sys32undefined, Name: "ip_changed_alert", Probes: []probe{{event: "__inet_insert_ifa", attach: kprobe, fn: "trace_inet_insert_ifa"}, {event: "__inet_del_ifa", attach: kprobe, fn: "trace_inet_del_ifa"}}, Sets: []string{}},
+	IpChangedAlertEventID:      {ID: IpChangedAlertEventID, ID32Bit: sys32undefined, Name: "ip_changed_alert", Probes: []probe{{event: "inet_rtm_newaddr", attach: kprobe, fn: "trace_inet_rtm_newaddr"}, {event: "inet_rtm_deladdr", attach: kprobe, fn: "trace_inet_rtm_deladdr"}, {event: "devinet_ioctl", attach: kprobe, fn: "trace_devinet_ioctl"}, {event: "__inet_insert_ifa", attach: kprobe, fn: "trace___inet_insert_ifa"}, {event: "__inet_del_ifa", attach: kprobe, fn: "trace___inet_del_ifa"}}, Sets: []string{}},
 }
 
 // EventsIDToParams is list of the parameters (name and type) used by the events

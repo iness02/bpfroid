@@ -3,11 +3,6 @@
     "api": [],
 
     "syscalls": [
-      { "name": "connect" },
-      { "name": "getsockname" },
-      { "name": "bind" },
-      { "name": "sendmsg" },
-      { "name": "sendto" }
     ],
 
     "uprobes": [],

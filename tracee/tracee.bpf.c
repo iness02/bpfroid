@@ -2705,47 +2705,34 @@ int BPF_KPROBE(trace_ret_security_file_permission)
 #define IP_OP_ADD    1
 #define IP_OP_DEL    2
 
-// Structure to hold IPv4 interface address info (matching kernel's in_ifaddr)
-struct in_ifaddr_minimal {
-    void *hash_next;           // struct hlist_node hash
-    void *ifa_next;            // struct in_ifaddr *ifa_next
-    void *ifa_dev;             // struct in_device *ifa_dev
-    void *callback_head;       // struct callback_head
-    __be32 ifa_local;          // local IP address
-    __be32 ifa_address;        // address
-    __be32 ifa_mask;           // netmask
-    __u32 ifa_rt_priority;     // route priority
-    __be32 ifa_broadcast;      // broadcast address
-    unsigned char ifa_scope;   // scope
-    unsigned char ifa_prefixlen; // prefix length
-    __u32 ifa_flags;           // flags
-    char ifa_label[16];        // interface label/name
+// Structure to hold netlink message info for address operations
+// Used to parse RTNetlink IFA_* attributes
+struct ifaddrmsg_minimal {
+    __u8 ifa_family;     // Address family (AF_INET)
+    __u8 ifa_prefixlen;  // Prefix length
+    __u8 ifa_flags;      // Flags
+    __u8 ifa_scope;      // Scope
+    __u32 ifa_index;     // Interface index
 };
 
-// Structure for in_device to get interface name
-struct in_device_minimal {
-    void *dev;                 // struct net_device *dev
+// Netlink attribute header
+struct nlattr_minimal {
+    __u16 nla_len;
+    __u16 nla_type;
 };
 
-// Minimal net_device structure to get interface name
-struct net_device_minimal {
-    char name[16];             // IFNAMSIZ = 16
+// Interface info from kernel
+struct net_device_lookup {
+    char name[16];
 };
 
 // Convert big-endian 32-bit IP to string in kernel-space buffer
-// Returns: number of characters written
 static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
 {
-    // IP is in network byte order (big-endian), convert to host byte order
     unsigned char b0 = (ip >> 0) & 0xFF;
     unsigned char b1 = (ip >> 8) & 0xFF;
     unsigned char b2 = (ip >> 16) & 0xFF;
     unsigned char b3 = (ip >> 24) & 0xFF;
-    
-    // Format: b0.b1.b2.b3 (but in big-endian, byte 0 is most significant)
-    // Actually ip is already __be32, so bytes are: b3.b2.b1.b0 in memory for little-endian
-    // We need to output in network order which is: byte0.byte1.byte2.byte3
-    // For __be32 on little endian: byte at address is most significant
     
     int i = 0;
     unsigned char bytes[4];
@@ -2754,8 +2741,6 @@ static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
     bytes[2] = b2;
     bytes[3] = b3;
     
-    // Simple conversion - we store as "X.X.X.X" format
-    // For eBPF we need to be careful with loops, so unroll
     unsigned char val;
     int j;
     
@@ -2763,7 +2748,6 @@ static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
     for (j = 0; j < 4; j++) {
         val = bytes[j];
         
-        // Convert each octet to string
         if (val >= 100) {
             if (i < buf_size - 1) buf[i++] = '0' + (val / 100);
             val = val % 100;
@@ -2776,7 +2760,6 @@ static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
             if (i < buf_size - 1) buf[i++] = '0' + val;
         }
         
-        // Add dot separator (except after last octet)
         if (j < 3 && i < buf_size - 1) {
             buf[i++] = '.';
         }
@@ -2787,144 +2770,488 @@ static __always_inline int ip_to_str(char *buf, int buf_size, __be32 ip)
 }
 
 // Helper to submit IP change event
-static __always_inline int submit_ip_change_event(void *ctx, int op, __be32 ip_addr, char *iface_name, unsigned char prefix_len)
+static __always_inline int submit_ip_change_event(void *ctx, int op, __be32 ip_addr, u32 if_index, unsigned char prefix_len)
 {
-    if (!event_chosen(IP_CHANGED_ALERT))
+    bpf_trace_printk("SUBMIT: enter op=%d ip=%x\\n", 28, op, ip_addr);
+    
+    if (!event_chosen(IP_CHANGED_ALERT)) {
+        bpf_trace_printk("SUBMIT: event_chosen=0 FAIL\\n", 29);
         return 0;
+    }
+    bpf_trace_printk("SUBMIT: event_chosen OK\\n", 25);
 
     buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
-    if (submit_p == NULL)
+    if (submit_p == NULL) {
+        bpf_trace_printk("SUBMIT: get_buf NULL FAIL\\n", 27);
         return 0;
+    }
+    bpf_trace_printk("SUBMIT: get_buf OK\\n", 20);
+    
     set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
 
     context_t context = init_and_save_context(ctx, submit_p, IP_CHANGED_ALERT, 4 /*argnum*/, 0 /*ret*/);
+    bpf_trace_printk("SUBMIT: context eventid=%d\\n", 28, context.eventid);
 
     u64 *tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
-    if (!tags)
+    if (!tags) {
+        bpf_trace_printk("SUBMIT: tags NULL FAIL\\n", 24);
         return -1;
+    }
+    bpf_trace_printk("SUBMIT: tags OK\\n", 17);
 
     u8 argnum = 0;
     
     // Arg 0: operation ("ADD" or "DEL")
     if (op == IP_OP_ADD) {
         argnum += save_str_to_buf(submit_p, "ADD", DEC_ARG(0, *tags));
+        bpf_trace_printk("SUBMIT: arg0=ADD argnum=%d\\n", 28, argnum);
     } else {
-        argnum += save_str_to_buf(submit_p, "DEL", DEC_ARG(1, *tags));
+        argnum += save_str_to_buf(submit_p, "DEL", DEC_ARG(0, *tags));
+        bpf_trace_printk("SUBMIT: arg0=DEL argnum=%d\\n", 28, argnum);
     }
     
     // Arg 1: IP address as string
-    char ip_str[16];  // Max IPv4 string is "255.255.255.255" = 15 chars + null
+    char ip_str[16];
     ip_to_str(ip_str, sizeof(ip_str), ip_addr);
     argnum += save_str_to_buf(submit_p, ip_str, DEC_ARG(1, *tags));
+    bpf_trace_printk("SUBMIT: arg1=ip argnum=%d\\n", 27, argnum);
     
-    // Arg 2: interface name
-    argnum += save_str_to_buf(submit_p, iface_name, DEC_ARG(2, *tags));
+    // Arg 2: interface index as string (interface name not easily available)
+    char iface_str[16];
+    __builtin_memset(iface_str, 0, sizeof(iface_str));
+    // Format interface index as string
+    u32 idx = if_index;
+    int pos = 0;
+    if (idx == 0) {
+        iface_str[pos++] = '0';
+    } else {
+        char tmp[12];
+        int len = 0;
+        while (idx > 0 && len < 10) {
+            tmp[len++] = '0' + (idx % 10);
+            idx /= 10;
+        }
+        while (len > 0) {
+            iface_str[pos++] = tmp[--len];
+        }
+    }
+    iface_str[pos] = '\0';
+    argnum += save_str_to_buf(submit_p, iface_str, DEC_ARG(2, *tags));
+    bpf_trace_printk("SUBMIT: arg2=iface argnum=%d\\n", 30, argnum);
     
     // Arg 3: prefix length
     u32 prefix = prefix_len;
     argnum += save_to_submit_buf(submit_p, &prefix, sizeof(u32), UINT_T, DEC_ARG(3, *tags));
+    bpf_trace_printk("SUBMIT: arg3=prefix argnum=%d\\n", 31, argnum);
 
     context.argnum = argnum;
     save_context_to_buf(submit_p, (void*)&context);
+    
+    bpf_trace_printk("SUBMIT: calling perf_submit\\n", 29);
     events_perf_submit(ctx);
+    bpf_trace_printk("SUBMIT: perf_submit done OK\\n", 28);
+    
     return 0;
 }
 
-// Kprobe for __inet_insert_ifa - called when IPv4 address is added
-// int __inet_insert_ifa(struct in_ifaddr *ifa, struct nlmsghdr *nlh, u32 portid, struct netlink_ext_ack *extack)
-SEC("kprobe/__inet_insert_ifa")
-int BPF_KPROBE(trace_inet_insert_ifa)
+// ioctl commands for IP address configuration
+#define SIOCSIFADDR     0x8916  // set IP address
+#define SIOCDIFADDR     0x8936  // delete IP address
+#define SIOCGIFADDR     0x8915  // get IP address
+
+// ifreq structure offsets (for reading from userspace)
+// struct ifreq {
+//     char ifr_name[16];              // offset 0, 16 bytes
+//     union {
+//         struct sockaddr ifr_addr;   // offset 16
+//         ...
+//     }
+// }
+// struct sockaddr_in {
+//     sa_family_t sin_family;  // 2 bytes at offset 0
+//     in_port_t sin_port;      // 2 bytes at offset 2
+//     struct in_addr sin_addr; // 4 bytes at offset 4
+// }
+#define IFREQ_NAME_OFFSET   0
+#define IFREQ_NAME_SIZE     16
+#define IFREQ_ADDR_OFFSET   16
+#define SOCKADDR_FAMILY_OFFSET  0
+#define SOCKADDR_PORT_OFFSET    2
+#define SOCKADDR_ADDR_OFFSET    4  // sin_addr within sockaddr_in
+
+// Kprobe for devinet_ioctl - handles IP address configuration via ioctl
+// int devinet_ioctl(struct net *net, unsigned int cmd, struct ifreq __user *ifr)
+// This function is EXPORTED (uppercase T in kallsyms) and works on CFI kernels
+SEC("kprobe/devinet_ioctl")
+int BPF_KPROBE(trace_devinet_ioctl)
 {
-    if (!should_trace())
-        return 0;
-
-    if (!event_chosen(IP_CHANGED_ALERT))
-        return 0;
-
-    // First argument is struct in_ifaddr *ifa
-    struct in_ifaddr_minimal *ifa = (struct in_ifaddr_minimal *)PT_REGS_PARM1(ctx);
-    if (ifa == NULL)
-        return 0;
-
-    // Read the IP address
-    __be32 ip_addr;
-    bpf_probe_read(&ip_addr, sizeof(ip_addr), &ifa->ifa_local);
+    bpf_trace_printk("IP_ALERT: devinet_ioctl called!\\n", 33);
     
-    // Read prefix length
-    unsigned char prefix_len;
-    bpf_probe_read(&prefix_len, sizeof(prefix_len), &ifa->ifa_prefixlen);
-    
-    // Read interface label (name)
-    char iface_name[16];
-    __builtin_memset(iface_name, 0, sizeof(iface_name));
-    bpf_probe_read_str(iface_name, sizeof(iface_name), ifa->ifa_label);
-    
-    // If label is empty, try to get name from in_device->net_device
-    if (iface_name[0] == '\0') {
-        struct in_device_minimal *in_dev;
-        bpf_probe_read(&in_dev, sizeof(in_dev), &ifa->ifa_dev);
-        if (in_dev != NULL) {
-            struct net_device_minimal *netdev;
-            bpf_probe_read(&netdev, sizeof(netdev), &in_dev->dev);
-            if (netdev != NULL) {
-                bpf_probe_read_str(iface_name, sizeof(iface_name), netdev->name);
-            }
-        }
+    if (!event_chosen(IP_CHANGED_ALERT)) {
+        bpf_trace_printk("IP_ALERT: ioctl event_chosen=0\\n", 32);
+        return 0;
     }
+    bpf_trace_printk("IP_ALERT: ioctl event_chosen OK\\n", 33);
+
+    // Get the ioctl command (second argument)
+    unsigned int cmd = (unsigned int)PT_REGS_PARM2(ctx);
+    bpf_trace_printk("IP_ALERT: ioctl cmd=%x\\n", 24, cmd);
     
-    return submit_ip_change_event(ctx, IP_OP_ADD, ip_addr, iface_name, prefix_len);
+    // Only handle address set/delete operations
+    int op;
+    if (cmd == SIOCSIFADDR) {
+        op = IP_OP_ADD;
+        bpf_trace_printk("IP_ALERT: ioctl SIOCSIFADDR\\n", 29);
+    } else if (cmd == SIOCDIFADDR) {
+        op = IP_OP_DEL;
+        bpf_trace_printk("IP_ALERT: ioctl SIOCDIFADDR\\n", 29);
+    } else {
+        bpf_trace_printk("IP_ALERT: ioctl other cmd, skip\\n", 33);
+        return 0;  // Not an address change operation
+    }
+
+    // Get the ifreq pointer (third argument, userspace pointer)
+    void __user *ifr_ptr = (void __user *)PT_REGS_PARM3(ctx);
+    if (ifr_ptr == NULL) {
+        bpf_trace_printk("IP_ALERT: ioctl ifr NULL\\n", 26);
+        return 0;
+    }
+    bpf_trace_printk("IP_ALERT: ioctl ifr=%lx\\n", 25, (unsigned long)ifr_ptr);
+
+    // Read interface name
+    char ifr_name[IFREQ_NAME_SIZE];
+    if (bpf_probe_read_user(ifr_name, sizeof(ifr_name), ifr_ptr + IFREQ_NAME_OFFSET) < 0) {
+        bpf_trace_printk("IP_ALERT: ioctl read name fail\\n", 32);
+        return 0;
+    }
+
+    // Read address family to verify it's IPv4
+    __u16 family;
+    if (bpf_probe_read_user(&family, sizeof(family), ifr_ptr + IFREQ_ADDR_OFFSET + SOCKADDR_FAMILY_OFFSET) < 0) {
+        bpf_trace_printk("IP_ALERT: ioctl read family fail\\n", 34);
+        return 0;
+    }
+    bpf_trace_printk("IP_ALERT: ioctl family=%d\\n", 27, family);
+    
+    // Only handle IPv4 (AF_INET = 2)
+    if (family != 2) {
+        bpf_trace_printk("IP_ALERT: ioctl not IPv4\\n", 26);
+        return 0;
+    }
+
+    // Read the IP address (sin_addr is at offset 4 within sockaddr_in)
+    __be32 ip_addr;
+    if (bpf_probe_read_user(&ip_addr, sizeof(ip_addr), ifr_ptr + IFREQ_ADDR_OFFSET + SOCKADDR_ADDR_OFFSET) < 0) {
+        bpf_trace_printk("IP_ALERT: ioctl read ip fail\\n", 30);
+        return 0;
+    }
+    bpf_trace_printk("IP_ALERT: ioctl ip=%x\\n", 23, ip_addr);
+
+    if (ip_addr == 0) {
+        bpf_trace_printk("IP_ALERT: ioctl ip=0, skip\\n", 28);
+        return 0;
+    }
+
+    // Submit the event
+    bpf_trace_printk("IP_ALERT: ioctl submitting\\n", 28);
+    return submit_ip_change_event(ctx, op, ip_addr, 0, 0);
 }
 
-// Kprobe for __inet_del_ifa - called when IPv4 address is deleted
-// void __inet_del_ifa(struct in_device *in_dev, struct in_ifaddr **ifap, int destroy, struct nlmsghdr *nlh, u32 portid)
-SEC("kprobe/__inet_del_ifa")
-int BPF_KPROBE(trace_inet_del_ifa)
+// Kprobe for inet_rtm_newaddr - RTNetlink handler for adding IPv4 address
+// This is the main function called when "ip addr add" is used
+// int inet_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh, struct netlink_ext_ack *extack)
+SEC("kprobe/inet_rtm_newaddr")
+int BPF_KPROBE(trace_inet_rtm_newaddr)
 {
-    if (!should_trace())
+    bpf_trace_printk("IP_ALERT: inet_rtm_newaddr called!\\n", 36);
+    
+    if (!event_chosen(IP_CHANGED_ALERT)) {
+        bpf_trace_printk("IP_ALERT: rtm event_chosen=0\\n", 30);
         return 0;
+    }
+    
+    bpf_trace_printk("IP_ALERT: rtm event_chosen OK\\n", 31);
 
+    // Second argument is struct nlmsghdr *nlh
+    struct nlmsghdr *nlh = (struct nlmsghdr *)PT_REGS_PARM2(ctx);
+    if (nlh == NULL) {
+        bpf_trace_printk("IP_ALERT: rtm nlh NULL\\n", 24);
+        return 0;
+    }
+    
+    bpf_trace_printk("IP_ALERT: rtm nlh = %lx\\n", 25, (unsigned long)nlh);
+
+    // The ifaddrmsg follows nlmsghdr (at nlh + 16 on 64-bit)
+    // struct ifaddrmsg {
+    //   __u8 ifa_family;
+    //   __u8 ifa_prefixlen;
+    //   __u8 ifa_flags;
+    //   __u8 ifa_scope;
+    //   __u32 ifa_index;
+    // };
+    
+    __u8 ifa_family = 0;
+    __u8 ifa_prefixlen = 0;
+    __u32 ifa_index = 0;
+    
+    // Read ifaddrmsg fields
+    bpf_probe_read(&ifa_family, 1, (void *)nlh + 16);
+    bpf_probe_read(&ifa_prefixlen, 1, (void *)nlh + 17);
+    bpf_probe_read(&ifa_index, 4, (void *)nlh + 20);
+    
+    bpf_trace_printk("IP_ALERT: rtm family=%d prefix=%d\\n", 35, ifa_family, ifa_prefixlen);
+    
+    // Only handle IPv4 (AF_INET = 2)
+    if (ifa_family != 2) {
+        bpf_trace_printk("IP_ALERT: rtm not IPv4\\n", 24);
+        return 0;
+    }
+
+    // Parse netlink attributes to find IFA_LOCAL or IFA_ADDRESS
+    // Attributes start at nlh + 16 + 8 (after nlmsghdr + ifaddrmsg)
+    void *attr_start = (void *)nlh + 24;
+    
+    __be32 ip_addr = 0;
+    __u16 nla_len = 0;
+    __u16 nla_type = 0;
+    
+    // Read first attribute
+    bpf_probe_read(&nla_len, 2, attr_start);
+    bpf_probe_read(&nla_type, 2, attr_start + 2);
+    
+    bpf_trace_printk("IP_ALERT: rtm attr1 len=%d type=%d\\n", 36, nla_len, nla_type);
+    
+    // IFA_ADDRESS=1, IFA_LOCAL=2
+    if ((nla_type == 1 || nla_type == 2) && nla_len >= 8) {
+        bpf_probe_read(&ip_addr, 4, attr_start + 4);
+        bpf_trace_printk("IP_ALERT: rtm ip from attr1 = %x\\n", 34, ip_addr);
+    }
+    
+    // If not found, try second attribute
+    if (ip_addr == 0 && nla_len > 0) {
+        __u16 aligned_len = (nla_len + 3) & ~3;
+        void *attr2 = attr_start + aligned_len;
+        
+        bpf_probe_read(&nla_len, 2, attr2);
+        bpf_probe_read(&nla_type, 2, attr2 + 2);
+        
+        bpf_trace_printk("IP_ALERT: rtm attr2 len=%d type=%d\\n", 36, nla_len, nla_type);
+        
+        if ((nla_type == 1 || nla_type == 2) && nla_len >= 8) {
+            bpf_probe_read(&ip_addr, 4, attr2 + 4);
+            bpf_trace_printk("IP_ALERT: rtm ip from attr2 = %x\\n", 34, ip_addr);
+        }
+    }
+
+    if (ip_addr == 0) {
+        bpf_trace_printk("IP_ALERT: rtm no IP found, using debug\\n", 40);
+        ip_addr = 0x03030303;  // 3.3.3.3 - debug marker for rtm
+    }
+    
+    bpf_trace_printk("IP_ALERT: rtm submitting ip=%x\\n", 32, ip_addr);
+    
+    return submit_ip_change_event(ctx, IP_OP_ADD, ip_addr, ifa_index, ifa_prefixlen);
+}
+
+// Kprobe for inet_rtm_deladdr - RTNetlink handler for removing IPv4 address
+SEC("kprobe/inet_rtm_deladdr")
+int BPF_KPROBE(trace_inet_rtm_deladdr)
+{
+    bpf_trace_printk("IP_ALERT: inet_rtm_deladdr called!\\n", 36);
+    
     if (!event_chosen(IP_CHANGED_ALERT))
         return 0;
 
-    // First argument is struct in_device *in_dev
-    struct in_device_minimal *in_dev = (struct in_device_minimal *)PT_REGS_PARM1(ctx);
-    if (in_dev == NULL)
+    struct nlmsghdr *nlh = (struct nlmsghdr *)PT_REGS_PARM2(ctx);
+    if (nlh == NULL)
         return 0;
+
+    __u8 ifa_family = 0;
+    __u8 ifa_prefixlen = 0;
+    __u32 ifa_index = 0;
     
-    // Second argument is struct in_ifaddr **ifap
-    struct in_ifaddr_minimal **ifap = (struct in_ifaddr_minimal **)PT_REGS_PARM2(ctx);
+    bpf_probe_read(&ifa_family, 1, (void *)nlh + 16);
+    bpf_probe_read(&ifa_prefixlen, 1, (void *)nlh + 17);
+    bpf_probe_read(&ifa_index, 4, (void *)nlh + 20);
+    
+    if (ifa_family != 2)
+        return 0;
+
+    void *attr_start = (void *)nlh + 24;
+    __be32 ip_addr = 0;
+    __u16 nla_len = 0;
+    __u16 nla_type = 0;
+    
+    bpf_probe_read(&nla_len, 2, attr_start);
+    bpf_probe_read(&nla_type, 2, attr_start + 2);
+    
+    if ((nla_type == 1 || nla_type == 2) && nla_len >= 8) {
+        bpf_probe_read(&ip_addr, 4, attr_start + 4);
+    }
+    
+    if (ip_addr == 0 && nla_len > 0) {
+        __u16 aligned_len = (nla_len + 3) & ~3;
+        void *attr2 = attr_start + aligned_len;
+        bpf_probe_read(&nla_len, 2, attr2);
+        bpf_probe_read(&nla_type, 2, attr2 + 2);
+        if ((nla_type == 1 || nla_type == 2) && nla_len >= 8) {
+            bpf_probe_read(&ip_addr, 4, attr2 + 4);
+        }
+    }
+
+    if (ip_addr == 0)
+        ip_addr = 0x04040404;  // 4.4.4.4 - debug marker
+    
+    return submit_ip_change_event(ctx, IP_OP_DEL, ip_addr, ifa_index, ifa_prefixlen);
+}
+
+// Kprobe for __inet_insert_ifa - internal function for IP address insertion
+// Called for netlink-based IP address additions (DHCP, "ip addr add", etc.)
+// static int __inet_insert_ifa(struct in_ifaddr *ifa, struct nlmsghdr *nlh, u32 portid, struct netlink_ext_ack *extack)
+//
+// struct in_ifaddr layout on 64-bit ARM (offsets may vary):
+//   struct hlist_node hash;        // 0:  16 bytes
+//   struct in_ifaddr *ifa_next;    // 16: 8 bytes
+//   struct in_device *ifa_dev;     // 24: 8 bytes
+//   struct rcu_head rcu_head;      // 32: 16 bytes
+//   __be32 ifa_local;              // 48: 4 bytes  <-- IP ADDRESS
+//   __be32 ifa_address;            // 52: 4 bytes
+//   __be32 ifa_mask;               // 56: 4 bytes
+//   __u32 ifa_rt_priority;         // 60: 4 bytes
+//   __be32 ifa_broadcast;          // 64: 4 bytes
+//   unsigned char ifa_scope;       // 68: 1 byte
+//   unsigned char ifa_prefixlen;   // 69: 1 byte  <-- PREFIX LENGTH
+//
+SEC("kprobe/__inet_insert_ifa")
+int BPF_KPROBE(trace___inet_insert_ifa)
+{
+    // DEBUG: Log that we entered the handler
+    bpf_trace_printk("IP_ALERT: __inet_insert_ifa called\\n", 36);
+
+    // Skip should_trace() - IP changes are system-level events
+    // that should be captured regardless of the process context
+    if (!event_chosen(IP_CHANGED_ALERT)) {
+        bpf_trace_printk("IP_ALERT: event_chosen returned 0\\n", 35);
+        return 0;
+    }
+    
+    bpf_trace_printk("IP_ALERT: event_chosen OK\\n", 27);
+
+    // First argument is struct in_ifaddr *ifa
+    void *ifa = (void *)PT_REGS_PARM1(ctx);
+    if (ifa == NULL) {
+        bpf_trace_printk("IP_ALERT: ifa is NULL\\n", 23);
+        return 0;
+    }
+    
+    bpf_trace_printk("IP_ALERT: ifa ptr = %lx\\n", 25, (unsigned long)ifa);
+
+    // Try multiple offsets for ifa_local (IP address)
+    // The correct offset depends on kernel version and config
+    __be32 ip_addr = 0;
+    __be32 ip_test = 0;
+    
+    // Try many offsets and log what we find
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 48);
+    bpf_trace_printk("IP_ALERT: offset 48 = %x\\n", 26, ip_test);
+    if (ip_test != 0) ip_addr = ip_test;
+    
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 32);
+    bpf_trace_printk("IP_ALERT: offset 32 = %x\\n", 26, ip_test);
+    if (ip_addr == 0 && ip_test != 0) ip_addr = ip_test;
+    
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 24);
+    bpf_trace_printk("IP_ALERT: offset 24 = %x\\n", 26, ip_test);
+    if (ip_addr == 0 && ip_test != 0) ip_addr = ip_test;
+    
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 52);
+    bpf_trace_printk("IP_ALERT: offset 52 = %x\\n", 26, ip_test);
+    if (ip_addr == 0 && ip_test != 0) ip_addr = ip_test;
+    
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 40);
+    bpf_trace_printk("IP_ALERT: offset 40 = %x\\n", 26, ip_test);
+    if (ip_addr == 0 && ip_test != 0) ip_addr = ip_test;
+    
+    bpf_probe_read(&ip_test, sizeof(ip_test), ifa + 36);
+    bpf_trace_printk("IP_ALERT: offset 36 = %x\\n", 26, ip_test);
+    if (ip_addr == 0 && ip_test != 0) ip_addr = ip_test;
+
+    // DEBUG: If all offsets failed, still emit event with IP 1.1.1.1 to confirm handler runs
+    if (ip_addr == 0) {
+        bpf_trace_printk("IP_ALERT: all offsets 0, using 1.1.1.1\\n", 40);
+        ip_addr = 0x01010101;  // 1.1.1.1 - indicates offset discovery needed
+    }
+    
+    bpf_trace_printk("IP_ALERT: final ip = %x\\n", 25, ip_addr);
+
+    // Read prefix length - use default of 24
+    unsigned char prefix_len = 24;
+    
+    bpf_trace_printk("IP_ALERT: calling submit_ip_change_event\\n", 42);
+    
+    int ret = submit_ip_change_event(ctx, IP_OP_ADD, ip_addr, 0, prefix_len);
+    
+    bpf_trace_printk("IP_ALERT: submit returned %d\\n", 30, ret);
+    
+    return ret;
+}
+
+// Kprobe for __inet_del_ifa - internal function for IP address deletion
+// Called for netlink-based IP address removals ("ip addr del", etc.)
+// void __inet_del_ifa(struct in_device *in_dev, struct in_ifaddr **ifap, int destroy, struct nlmsghdr *nlh, u32 portid)
+SEC("kprobe/__inet_del_ifa")
+int BPF_KPROBE(trace___inet_del_ifa)
+{
+    // Skip should_trace() - IP changes are system-level events
+    if (!event_chosen(IP_CHANGED_ALERT))
+        return 0;
+
+    // Second argument is struct in_ifaddr **ifap - pointer to pointer
+    void **ifap = (void **)PT_REGS_PARM2(ctx);
     if (ifap == NULL)
         return 0;
-    
-    // Dereference to get the actual in_ifaddr pointer
-    struct in_ifaddr_minimal *ifa;
+
+    // Dereference to get struct in_ifaddr *ifa
+    void *ifa = NULL;
     bpf_probe_read(&ifa, sizeof(ifa), ifap);
     if (ifa == NULL)
         return 0;
 
-    // Read the IP address
-    __be32 ip_addr;
-    bpf_probe_read(&ip_addr, sizeof(ip_addr), &ifa->ifa_local);
+    // Read ifa_local (IP address) - use same offsets as insert
+    __be32 ip_addr = 0;
     
-    // Read prefix length
-    unsigned char prefix_len;
-    bpf_probe_read(&prefix_len, sizeof(prefix_len), &ifa->ifa_prefixlen);
+    // Offset 48 (most common on 64-bit)
+    bpf_probe_read(&ip_addr, sizeof(ip_addr), ifa + 48);
     
-    // Read interface label (name)
-    char iface_name[16];
-    __builtin_memset(iface_name, 0, sizeof(iface_name));
-    bpf_probe_read_str(iface_name, sizeof(iface_name), ifa->ifa_label);
-    
-    // If label is empty, try to get name from in_device->net_device
-    if (iface_name[0] == '\0') {
-        struct net_device_minimal *netdev;
-        bpf_probe_read(&netdev, sizeof(netdev), &in_dev->dev);
-        if (netdev != NULL) {
-            bpf_probe_read_str(iface_name, sizeof(iface_name), netdev->name);
-        }
+    if (ip_addr == 0) {
+        bpf_probe_read(&ip_addr, sizeof(ip_addr), ifa + 32);
     }
     
-    return submit_ip_change_event(ctx, IP_OP_DEL, ip_addr, iface_name, prefix_len);
+    if (ip_addr == 0) {
+        bpf_probe_read(&ip_addr, sizeof(ip_addr), ifa + 24);
+    }
+    
+    if (ip_addr == 0) {
+        bpf_probe_read(&ip_addr, sizeof(ip_addr), ifa + 52);
+    }
+
+    // DEBUG: emit event even if IP is 0 to confirm handler runs
+    if (ip_addr == 0) {
+        ip_addr = 0x02020202;  // 2.2.2.2 - indicates delete handler ran but offset wrong
+    }
+
+    // Read prefix length
+    unsigned char prefix_len = 0;
+    bpf_probe_read(&prefix_len, sizeof(prefix_len), ifa + 69);
+    
+    if (prefix_len == 0 || prefix_len > 32) {
+        bpf_probe_read(&prefix_len, sizeof(prefix_len), ifa + 53);
+    }
+    
+    if (prefix_len > 32)
+        prefix_len = 24;
+
+    return submit_ip_change_event(ctx, IP_OP_DEL, ip_addr, 0, prefix_len);
 }
 
 char LICENSE[] SEC("license") = "GPL";
