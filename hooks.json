@@ -1,0 +1,15 @@
+{
+  "hookConfigs": {
+    "api": [],
+
+    "syscalls": [
+    ],
+
+    "uprobes": [],
+    
+  "kprobes": []
+
+    },
+
+  "trace": true
+}
