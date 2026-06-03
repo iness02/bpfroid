@@ -133,11 +133,23 @@
 #define UID_CHANGE_ALERT      1013
 #define WRITE_ALERT           1014
 #define IP_CHANGE_ALERT       1015
-#define MAX_EVENT_ID          1016
+#define SELINUX_MODE_CHANGE_ALERT 1016
+#define MAX_EVENT_ID          1017
 
 // IP change action types
 #define IP_ACTION_ADD         1
 #define IP_ACTION_DEL         2
+
+// SELinux mode values (success)
+#define SELINUX_MODE_PERMISSIVE 0
+#define SELINUX_MODE_ENFORCING  1
+// SELinux mode values (attempt/failed)
+#define SELINUX_ATTEMPT_PERMISSIVE 2
+#define SELINUX_ATTEMPT_ENFORCING  3
+
+// SELinux change method
+#define SELINUX_METHOD_WRITE      1
+#define SELINUX_METHOD_SETENFORCE 2
 
 #define CONFIG_SHOW_SYSCALL         1
 #define CONFIG_EXEC_ENV             2
@@ -601,6 +613,65 @@ static __inline int has_prefix(char *prefix_p, char *str_p, int n)
     }
 
     // prefix is too long
+    return 0;
+}
+
+// Check if the path matches /sys/fs/selinux/enforce
+// Using direct character comparison to avoid BPF rodata relocation issues
+static __always_inline int is_selinux_enforce_path(char *path_p)
+{
+    char path[32];
+    bpf_probe_read_str(path, sizeof(path), path_p);
+    
+    // Compare with "/sys/fs/selinux/enforce" character by character
+    if (path[0] != '/' || path[1] != 's' || path[2] != 'y' || path[3] != 's' ||
+        path[4] != '/' || path[5] != 'f' || path[6] != 's' || path[7] != '/' ||
+        path[8] != 's' || path[9] != 'e' || path[10] != 'l' || path[11] != 'i' ||
+        path[12] != 'n' || path[13] != 'u' || path[14] != 'x' || path[15] != '/' ||
+        path[16] != 'e' || path[17] != 'n' || path[18] != 'f' || path[19] != 'o' ||
+        path[20] != 'r' || path[21] != 'c' || path[22] != 'e' || path[23] != '\0')
+        return 0;
+    
+    return 1;
+}
+
+// Check if the path is a setenforce command
+// Common paths: /system/bin/setenforce, /sbin/setenforce
+// Using direct character comparison to avoid BPF rodata relocation issues
+static __always_inline int is_setenforce_cmd(char *path_p)
+{
+    char path[64];
+    bpf_probe_read_str(path, sizeof(path), path_p);
+    
+    // Check for /system/bin/setenforce (Android) - 23 chars
+    // "/system/bin/setenforce"
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'b' && path[9] == 'i' && path[10] == 'n' && path[11] == '/' &&
+        path[12] == 's' && path[13] == 'e' && path[14] == 't' && path[15] == 'e' &&
+        path[16] == 'n' && path[17] == 'f' && path[18] == 'o' && path[19] == 'r' &&
+        path[20] == 'c' && path[21] == 'e' && path[22] == '\0')
+        return 1;
+    
+    // Check for /sbin/setenforce (Linux) - 17 chars
+    // "/sbin/setenforce"
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'b' && path[3] == 'i' &&
+        path[4] == 'n' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
+        path[8] == 't' && path[9] == 'e' && path[10] == 'n' && path[11] == 'f' &&
+        path[12] == 'o' && path[13] == 'r' && path[14] == 'c' && path[15] == 'e' &&
+        path[16] == '\0')
+        return 1;
+    
+    // Check for /usr/sbin/setenforce (Linux) - 21 chars
+    // "/usr/sbin/setenforce"
+    if (path[0] == '/' && path[1] == 'u' && path[2] == 's' && path[3] == 'r' &&
+        path[4] == '/' && path[5] == 's' && path[6] == 'b' && path[7] == 'i' &&
+        path[8] == 'n' && path[9] == '/' && path[10] == 's' && path[11] == 'e' &&
+        path[12] == 't' && path[13] == 'e' && path[14] == 'n' && path[15] == 'f' &&
+        path[16] == 'o' && path[17] == 'r' && path[18] == 'c' && path[19] == 'e' &&
+        path[20] == '\0')
+        return 1;
+    
     return 0;
 }
 
@@ -1945,6 +2016,34 @@ int BPF_KPROBE(trace_security_bprm_check)
     save_str_to_buf(submit_p, (void *)fs_type, DEC_ARG(3, *tags));
 
     events_perf_submit(ctx);
+    
+    // Check for setenforce command execution and generate SELinux alert
+    // Note: The actual mode change will be detected via vfs_write to /sys/fs/selinux/enforce
+    // This detection provides early warning that setenforce was invoked
+    if (event_chosen(SELINUX_MODE_CHANGE_ALERT) && is_setenforce_cmd(&string_p->buf[*off])) {
+        // Reset buffer for the SELinux alert
+        set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+        context.eventid = SELINUX_MODE_CHANGE_ALERT;
+        context.argnum = 4;
+        context.retval = 0;
+        save_context_to_buf(submit_p, (void*)&context);
+        
+        u64 *selinux_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+        if (selinux_tags) {
+            // We can't easily determine the mode from command args in BPF
+            // Use 0xFFFFFFFF as unknown, let userspace handle correlation
+            // The actual mode will be detected from the subsequent vfs_write
+            u32 unknown_mode = 0xFFFFFFFF;
+            u32 method = SELINUX_METHOD_SETENFORCE;
+            char empty_str[1] = {0}; // Empty string without rodata relocation
+            save_to_submit_buf(submit_p, &unknown_mode, sizeof(u32), UINT_T, DEC_ARG(0, *selinux_tags));
+            save_to_submit_buf(submit_p, &method, sizeof(u32), UINT_T, DEC_ARG(1, *selinux_tags));
+            save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *selinux_tags));
+            save_str_to_buf(submit_p, (void *)empty_str, DEC_ARG(3, *selinux_tags)); // No value available at this point
+            events_perf_submit(ctx);
+        }
+    }
+    
     return 0;
 }
 
@@ -2376,6 +2475,49 @@ static __always_inline int do_vfs_write_writev_tail(struct pt_regs *ctx, u32 eve
             save_to_submit_buf(submit_p, &s_dev, sizeof(dev_t), DEV_T_T, DEC_ARG(2, *tags));
             save_to_submit_buf(submit_p, &inode_nr, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
             events_perf_submit(ctx);
+        }
+        
+        // SELinux mode change detection via write to /sys/fs/selinux/enforce
+        if (event_chosen(SELINUX_MODE_CHANGE_ALERT) && is_selinux_enforce_path(&string_p->buf[*off])) {
+            // Read the value being written (should be '0' or '1')
+            char written_val[4] = {0};
+            // Read at most 3 bytes (use explicit mask for BPF verifier)
+            // The value should be '0', '1', '0\n', or '1\n'
+            bpf_probe_read(written_val, 3, ptr);
+            
+            // Check return value to determine if write succeeded
+            // PT_REGS_RC(ctx) > 0 means success, <= 0 means failure
+            long write_ret = PT_REGS_RC(ctx);
+            int write_success = (write_ret > 0) ? 1 : 0;
+            
+            u32 new_mode = 0xFFFFFFFF; // Invalid mode
+            // Check if value is '0' (permissive) or '1' (enforcing)
+            if (written_val[0] == '0') {
+                new_mode = write_success ? SELINUX_MODE_PERMISSIVE : SELINUX_ATTEMPT_PERMISSIVE;
+            } else if (written_val[0] == '1') {
+                new_mode = write_success ? SELINUX_MODE_ENFORCING : SELINUX_ATTEMPT_ENFORCING;
+            }
+            
+            if (new_mode != 0xFFFFFFFF) {
+                // Reset buffer and submit SELinux alert
+                set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+                context.eventid = SELINUX_MODE_CHANGE_ALERT;
+                context.argnum = 4;
+                context.retval = 0;
+                save_context_to_buf(submit_p, (void*)&context);
+                
+                u64 *selinux_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+                if (!selinux_tags) {
+                    return -1;
+                }
+                
+                u32 method = SELINUX_METHOD_WRITE;
+                save_to_submit_buf(submit_p, &new_mode, sizeof(u32), UINT_T, DEC_ARG(0, *selinux_tags));
+                save_to_submit_buf(submit_p, &method, sizeof(u32), UINT_T, DEC_ARG(1, *selinux_tags));
+                save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *selinux_tags));
+                save_str_to_buf(submit_p, (void *)written_val, DEC_ARG(3, *selinux_tags));
+                events_perf_submit(ctx);
+            }
         }
     }
 

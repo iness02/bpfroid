@@ -304,6 +304,8 @@ func New(cfg TraceeConfig) (*Tracee, error) {
 		// write_alert depends on vfs_write probe for dropper detection
 		setEssential(VfsWriteEventID)
 		//setEssential(VfsWritevEventID) // vfs_writev doesn't exist on some kernels
+		// selinux_mode_change_alert depends on security_bprm_check for setenforce detection
+		setEssential(SecurityBprmCheckEventID)
 	}
 	if cfg.Capture.Mem {
 		setEssential(MemProtAlertEventID)
@@ -1786,6 +1788,13 @@ func (t *Tracee) prepareArgsForPrint(ctx *context, args map[argTag]interface{}) 
 		}
 		if ipAddr, isUint32 := args[t.EncParamName[ctx.EventID%2]["ip_addr"]].(uint32); isUint32 {
 			args[t.EncParamName[ctx.EventID%2]["ip_addr"]] = PrintIPv4Address(ipAddr)
+		}
+	case SELinuxModeChangeAlertEventID:
+		if mode, isUint32 := args[t.EncParamName[ctx.EventID%2]["new_mode"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["new_mode"]] = PrintSELinuxModeChangeAlert(mode)
+		}
+		if method, isUint32 := args[t.EncParamName[ctx.EventID%2]["method"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["method"]] = PrintSELinuxChangeMethod(method)
 		}
 	case CloneEventID:
 		if flags, isUint64 := args[t.EncParamName[ctx.EventID%2]["flags"]].(uint64); isUint64 {

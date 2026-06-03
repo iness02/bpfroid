@@ -654,3 +654,51 @@ func PrintIPv4Address(ipRaw uint32) string {
 		byte(ipRaw>>16),
 		byte(ipRaw>>24))
 }
+
+// PrintSELinuxMode prints the SELinux mode (permissive/enforcing)
+func PrintSELinuxMode(mode uint32) string {
+	switch mode {
+	case 0:
+		return "permissive (success)"
+	case 1:
+		return "enforcing (success)"
+	case 2:
+		return "permissive (attempt)"
+	case 3:
+		return "enforcing (attempt)"
+	case 0xFFFFFFFF:
+		return "unknown"
+	default:
+		return strconv.Itoa(int(mode))
+	}
+}
+
+// PrintSELinuxChangeMethod prints the SELinux change method (write/setenforce)
+func PrintSELinuxChangeMethod(method uint32) string {
+	switch method {
+	case 1:
+		return "vfs_write"
+	case 2:
+		return "setenforce"
+	default:
+		return strconv.Itoa(int(method))
+	}
+}
+
+// PrintSELinuxModeChangeAlert returns the alert message for SELinux mode change
+func PrintSELinuxModeChangeAlert(mode uint32) string {
+	switch mode {
+	case 0:
+		return "SELinux mode changed to permissive!"
+	case 1:
+		return "SELinux mode changed to enforcing"
+	case 2:
+		return "Attempt to change SELinux to permissive mode (denied)"
+	case 3:
+		return "Attempt to change SELinux to enforcing mode (denied)"
+	case 0xFFFFFFFF:
+		return "setenforce command executed"
+	default:
+		return fmt.Sprintf("SELinux mode changed to %d", mode)
+	}
+}
