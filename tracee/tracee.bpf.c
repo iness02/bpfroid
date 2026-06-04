@@ -146,6 +146,8 @@
 // SELinux mode values (attempt/failed)
 #define SELINUX_ATTEMPT_PERMISSIVE 2
 #define SELINUX_ATTEMPT_ENFORCING  3
+// SELinux open attempt (write intent detected at open time)
+#define SELINUX_OPEN_ATTEMPT       4
 
 // SELinux change method
 #define SELINUX_METHOD_WRITE      1
@@ -1698,6 +1700,67 @@ struct bpf_raw_tracepoint_args *ctx
         events_perf_submit(ctx);
     }
 
+    // SELinux mode change detection: catch failed openat attempts on /sys/fs/selinux/enforce
+    // This triggers when permission is denied before vfs_write/security_file_open are called
+    if (event_chosen(SELINUX_MODE_CHANGE_ALERT) && 
+        (id == SYS_OPENAT || id == SYS_OPEN) && 
+        ret < 0) {  // Failed open
+        
+        // Check if write flags were set
+        // For openat: args[2] = flags; For open: args[1] = flags
+        int flags;
+        if (id == SYS_OPENAT) {
+            flags = (int)saved_args.args[2];
+        } else {
+            flags = (int)saved_args.args[1];
+        }
+        
+        // O_WRONLY=1, O_RDWR=2 - check if either bit is set
+        if ((flags & 3) != 0) {
+            // Read pathname from saved args
+            // For openat: args[1] = pathname; For open: args[0] = pathname
+            char path[32];
+            const char *pathname;
+            if (id == SYS_OPENAT) {
+                pathname = (const char *)saved_args.args[1];
+            } else {
+                pathname = (const char *)saved_args.args[0];
+            }
+            
+            bpf_probe_read_str(path, sizeof(path), pathname);
+            
+            // Check for "/sys/fs/selinux/enforce" (24 chars)
+            if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+                path[4] == '/' && path[5] == 'f' && path[6] == 's' && path[7] == '/' &&
+                path[8] == 's' && path[9] == 'e' && path[10] == 'l' && path[11] == 'i' &&
+                path[12] == 'n' && path[13] == 'u' && path[14] == 'x' && path[15] == '/' &&
+                path[16] == 'e' && path[17] == 'n' && path[18] == 'f' && path[19] == 'o' &&
+                path[20] == 'r' && path[21] == 'c' && path[22] == 'e' && path[23] == '\0') {
+                
+                // Generate SELinux alert for denied open attempt
+                buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+                if (submit_p != NULL) {
+                    set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+                    context_t context = init_and_save_context(ctx, submit_p, SELINUX_MODE_CHANGE_ALERT, 4, ret);
+                    
+                    u64 *selinux_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+                    if (selinux_tags) {
+                        // Use SELINUX_OPEN_ATTEMPT to indicate open attempt was denied
+                        u32 attempt_mode = SELINUX_OPEN_ATTEMPT;
+                        u32 method = SELINUX_METHOD_WRITE;
+                        char empty_str[1] = {0};
+                        
+                        save_to_submit_buf(submit_p, &attempt_mode, sizeof(u32), UINT_T, DEC_ARG(0, *selinux_tags));
+                        save_to_submit_buf(submit_p, &method, sizeof(u32), UINT_T, DEC_ARG(1, *selinux_tags));
+                        save_str_to_buf(submit_p, (void *)path, DEC_ARG(2, *selinux_tags));
+                        save_str_to_buf(submit_p, (void *)empty_str, DEC_ARG(3, *selinux_tags));
+                        events_perf_submit(ctx);
+                    }
+                }
+            }
+        }
+    }
+
     if (event_chosen(id)) {
         u64 types = 0;
         u64 tags = 0;
@@ -2020,6 +2083,8 @@ int BPF_KPROBE(trace_security_bprm_check)
     // Check for setenforce command execution and generate SELinux alert
     // Note: The actual mode change will be detected via vfs_write to /sys/fs/selinux/enforce
     // This detection provides early warning that setenforce was invoked
+    
+    // Check binary path from bprm->file
     if (event_chosen(SELINUX_MODE_CHANGE_ALERT) && is_setenforce_cmd(&string_p->buf[*off])) {
         // Reset buffer for the SELinux alert
         set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
@@ -2089,6 +2154,43 @@ int BPF_KPROBE(trace_security_file_open)
     save_to_submit_buf(submit_p, &inode_nr, sizeof(unsigned long), ULONG_T, DEC_ARG(3, *tags));
 
     events_perf_submit(ctx);
+    
+    // SELinux mode change attempt detection via open with write flags
+    // Check if opening /sys/fs/selinux/enforce with write access
+    // O_WRONLY=1, O_RDWR=2 - check if either bit is set (flags & 3) != 0 means write intent
+    int f_flags = 0;
+    bpf_probe_read(&f_flags, sizeof(int), &file->f_flags);
+    
+    if (event_chosen(SELINUX_MODE_CHANGE_ALERT) && 
+        (f_flags & 3) != 0 &&  // Has write flags (O_WRONLY or O_RDWR)
+        is_selinux_enforce_path(&string_p->buf[*off])) {
+        
+        // This is an attempt to open SELinux enforce file for writing
+        // Generate alert - at this point we don't know if it will succeed or fail
+        // But if it reaches vfs_write, we'll get a more detailed alert there
+        // This alert is specifically for catching open attempts that may be denied
+        
+        set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+        context.eventid = SELINUX_MODE_CHANGE_ALERT;
+        context.argnum = 4;
+        context.retval = 0;
+        save_context_to_buf(submit_p, (void*)&context);
+        
+        u64 *selinux_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+        if (selinux_tags) {
+            // Use SELINUX_OPEN_ATTEMPT to indicate an open with write intent
+            // The actual value to be written is unknown at open time
+            u32 attempt_mode = SELINUX_OPEN_ATTEMPT;
+            u32 method = SELINUX_METHOD_WRITE;
+            char attempt_val[4] = {0, 0, 0, 0}; // Unknown value at open time
+            save_to_submit_buf(submit_p, &attempt_mode, sizeof(u32), UINT_T, DEC_ARG(0, *selinux_tags));
+            save_to_submit_buf(submit_p, &method, sizeof(u32), UINT_T, DEC_ARG(1, *selinux_tags));
+            save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *selinux_tags));
+            save_str_to_buf(submit_p, (void *)attempt_val, DEC_ARG(3, *selinux_tags));
+            events_perf_submit(ctx);
+        }
+    }
+    
     return 0;
 }
 

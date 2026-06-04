@@ -666,6 +666,8 @@ func PrintSELinuxMode(mode uint32) string {
 		return "permissive (attempt)"
 	case 3:
 		return "enforcing (attempt)"
+	case 4:
+		return "open attempt (write intent)"
 	case 0xFFFFFFFF:
 		return "unknown"
 	default:
@@ -696,6 +698,8 @@ func PrintSELinuxModeChangeAlert(mode uint32) string {
 		return "Attempt to change SELinux to permissive mode (denied)"
 	case 3:
 		return "Attempt to change SELinux to enforcing mode (denied)"
+	case 4:
+		return "Attempt to open SELinux enforce file for writing"
 	case 0xFFFFFFFF:
 		return "setenforce command executed"
 	default:
