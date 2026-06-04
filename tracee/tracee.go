@@ -1796,6 +1796,10 @@ func (t *Tracee) prepareArgsForPrint(ctx *context, args map[argTag]interface{}) 
 		if method, isUint32 := args[t.EncParamName[ctx.EventID%2]["method"]].(uint32); isUint32 {
 			args[t.EncParamName[ctx.EventID%2]["method"]] = PrintSELinuxChangeMethod(method)
 		}
+	case SELinuxPolicyReloadAlertEventID:
+		if action, isUint32 := args[t.EncParamName[ctx.EventID%2]["action"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["action"]] = PrintSELinuxPolicyReloadAction(action)
+		}
 	case CloneEventID:
 		if flags, isUint64 := args[t.EncParamName[ctx.EventID%2]["flags"]].(uint64); isUint64 {
 			args[t.EncParamName[ctx.EventID%2]["flags"]] = PrintCloneFlags(flags)

@@ -156,6 +156,7 @@ const (
 	WriteAlertEventID
 	IPChangedAlertEventID
 	SELinuxModeChangeAlertEventID
+	SELinuxPolicyReloadAlertEventID
 	MaxEventID
 )
 
@@ -531,6 +532,7 @@ var EventsIDToEvent = map[int32]EventConfig{
 	WriteAlertEventID:          {ID: WriteAlertEventID, ID32Bit: sys32undefined, Name: "dropper_alert", Probes: []probe{}, Sets: []string{}},
 	IPChangedAlertEventID:      {ID: IPChangedAlertEventID, ID32Bit: sys32undefined, Name: "ip_changed_alert", Probes: []probe{{event: "__inet_insert_ifa", attach: kprobe, fn: "trace_inet_insert_ifa"}, {event: "__inet_del_ifa", attach: kprobe, fn: "trace_inet_del_ifa"}}, Sets: []string{}},
 	SELinuxModeChangeAlertEventID: {ID: SELinuxModeChangeAlertEventID, ID32Bit: sys32undefined, Name: "selinux_mode_change_alert", Probes: []probe{}, Sets: []string{}},
+	SELinuxPolicyReloadAlertEventID: {ID: SELinuxPolicyReloadAlertEventID, ID32Bit: sys32undefined, Name: "selinux_policy_reload_alert", Probes: []probe{}, Sets: []string{}},
 }
 
 // EventsIDToParams is list of the parameters (name and type) used by the events
@@ -872,6 +874,7 @@ var EventsIDToParams = map[int32][]external.ArgMeta{
 	WriteAlertEventID:          {{Type: "unsigned int", Name: "magic"}, {Type: "const char*", Name: "pathname"}, {Type: "dev_t", Name: "dev"}, {Type: "unsigned long", Name: "inode"}},
 	IPChangedAlertEventID:      {{Type: "unsigned int", Name: "action"}, {Type: "unsigned int", Name: "ip_addr"}, {Type: "const char*", Name: "if_name"}, {Type: "unsigned int", Name: "prefix_len"}, {Type: "unsigned int", Name: "nl_portid"}},
 	SELinuxModeChangeAlertEventID: {{Type: "unsigned int", Name: "new_mode"}, {Type: "unsigned int", Name: "method"}, {Type: "const char*", Name: "pathname"}, {Type: "const char*", Name: "value"}},
+	SELinuxPolicyReloadAlertEventID: {{Type: "unsigned int", Name: "action"}, {Type: "size_t", Name: "bytes_written"}, {Type: "const char*", Name: "pathname"}},
 	SchedProcessExitEventID:    {},
 	PidfdSendSignalEventID:     {{Type: "int", Name: "pidfd"}, {Type: "int", Name: "sig"}, {Type: "siginfo_t*", Name: "info"}, {Type: "unsigned int", Name: "flags"}},
 	IoUringSetupEventID:        {{Type: "unsigned int", Name: "entries"}, {Type: "struct io_uring_params*", Name: "p"}},

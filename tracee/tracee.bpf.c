@@ -134,7 +134,8 @@
 #define WRITE_ALERT           1014
 #define IP_CHANGE_ALERT       1015
 #define SELINUX_MODE_CHANGE_ALERT 1016
-#define MAX_EVENT_ID          1017
+#define SELINUX_POLICY_RELOAD_ALERT 1017
+#define MAX_EVENT_ID          1018
 
 // IP change action types
 #define IP_ACTION_ADD         1
@@ -152,6 +153,11 @@
 // SELinux change method
 #define SELINUX_METHOD_WRITE      1
 #define SELINUX_METHOD_SETENFORCE 2
+
+// SELinux policy reload action types
+#define SELINUX_POLICY_RELOAD_SUCCESS     1  // Policy successfully loaded
+#define SELINUX_POLICY_RELOAD_ATTEMPT     2  // Write attempt (may have failed)
+#define SELINUX_POLICY_OPEN_DENIED        3  // Open attempt denied (permission error)
 
 #define CONFIG_SHOW_SYSCALL         1
 #define CONFIG_EXEC_ENV             2
@@ -632,6 +638,27 @@ static __always_inline int is_selinux_enforce_path(char *path_p)
         path[12] != 'n' || path[13] != 'u' || path[14] != 'x' || path[15] != '/' ||
         path[16] != 'e' || path[17] != 'n' || path[18] != 'f' || path[19] != 'o' ||
         path[20] != 'r' || path[21] != 'c' || path[22] != 'e' || path[23] != '\0')
+        return 0;
+    
+    return 1;
+}
+
+// Check if the path matches /sys/fs/selinux/load
+// This file is used to load new SELinux policies
+// Using direct character comparison to avoid BPF rodata relocation issues
+static __always_inline int is_selinux_load_path(char *path_p)
+{
+    char path[32];
+    bpf_probe_read_str(path, sizeof(path), path_p);
+    
+    // Compare with "/sys/fs/selinux/load" character by character (20 chars + null)
+    // /sys/fs/selinux/load
+    if (path[0] != '/' || path[1] != 's' || path[2] != 'y' || path[3] != 's' ||
+        path[4] != '/' || path[5] != 'f' || path[6] != 's' || path[7] != '/' ||
+        path[8] != 's' || path[9] != 'e' || path[10] != 'l' || path[11] != 'i' ||
+        path[12] != 'n' || path[13] != 'u' || path[14] != 'x' || path[15] != '/' ||
+        path[16] != 'l' || path[17] != 'o' || path[18] != 'a' || path[19] != 'd' ||
+        path[20] != '\0')
         return 0;
     
     return 1;
@@ -1758,6 +1785,35 @@ struct bpf_raw_tracepoint_args *ctx
                     }
                 }
             }
+            
+            // Check for "/sys/fs/selinux/load" (20 chars) - SELinux policy load file
+            if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+                path[4] == '/' && path[5] == 'f' && path[6] == 's' && path[7] == '/' &&
+                path[8] == 's' && path[9] == 'e' && path[10] == 'l' && path[11] == 'i' &&
+                path[12] == 'n' && path[13] == 'u' && path[14] == 'x' && path[15] == '/' &&
+                path[16] == 'l' && path[17] == 'o' && path[18] == 'a' && path[19] == 'd' &&
+                path[20] == '\0') {
+                
+                // Generate SELinux POLICY RELOAD alert for denied open attempt
+                if (event_chosen(SELINUX_POLICY_RELOAD_ALERT)) {
+                    buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+                    if (submit_p != NULL) {
+                        set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+                        context_t context = init_and_save_context(ctx, submit_p, SELINUX_POLICY_RELOAD_ALERT, 3, ret);
+                        
+                        u64 *policy_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+                        if (policy_tags) {
+                            u32 action = SELINUX_POLICY_OPEN_DENIED;
+                            size_t bytes_written = 0;
+                            
+                            save_to_submit_buf(submit_p, &action, sizeof(u32), UINT_T, DEC_ARG(0, *policy_tags));
+                            save_to_submit_buf(submit_p, &bytes_written, sizeof(size_t), SIZE_T_T, DEC_ARG(1, *policy_tags));
+                            save_str_to_buf(submit_p, (void *)path, DEC_ARG(2, *policy_tags));
+                            events_perf_submit(ctx);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2618,6 +2674,31 @@ static __always_inline int do_vfs_write_writev_tail(struct pt_regs *ctx, u32 eve
                 save_to_submit_buf(submit_p, &method, sizeof(u32), UINT_T, DEC_ARG(1, *selinux_tags));
                 save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *selinux_tags));
                 save_str_to_buf(submit_p, (void *)written_val, DEC_ARG(3, *selinux_tags));
+                events_perf_submit(ctx);
+            }
+        }
+        
+        // SELinux POLICY RELOAD detection via write to /sys/fs/selinux/load
+        // This is a HIGH SEVERITY security event - loading a new SELinux policy
+        if (event_chosen(SELINUX_POLICY_RELOAD_ALERT) && is_selinux_load_path(&string_p->buf[*off])) {
+            // Check return value to determine if write succeeded
+            // PT_REGS_RC(ctx) > 0 means success (returns bytes written), <= 0 means failure
+            long write_ret = PT_REGS_RC(ctx);
+            u32 action = (write_ret > 0) ? SELINUX_POLICY_RELOAD_SUCCESS : SELINUX_POLICY_RELOAD_ATTEMPT;
+            size_t bytes_written = (write_ret > 0) ? (size_t)write_ret : 0;
+            
+            // Reset buffer and submit SELinux policy reload alert
+            set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+            context.eventid = SELINUX_POLICY_RELOAD_ALERT;
+            context.argnum = 3;
+            context.retval = (int)write_ret;
+            save_context_to_buf(submit_p, (void*)&context);
+            
+            u64 *policy_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+            if (policy_tags) {
+                save_to_submit_buf(submit_p, &action, sizeof(u32), UINT_T, DEC_ARG(0, *policy_tags));
+                save_to_submit_buf(submit_p, &bytes_written, sizeof(size_t), SIZE_T_T, DEC_ARG(1, *policy_tags));
+                save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *policy_tags));
                 events_perf_submit(ctx);
             }
         }

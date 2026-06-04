@@ -706,3 +706,17 @@ func PrintSELinuxModeChangeAlert(mode uint32) string {
 		return fmt.Sprintf("SELinux mode changed to %d", mode)
 	}
 }
+
+// PrintSELinuxPolicyReloadAction returns the alert message for SELinux policy reload action
+func PrintSELinuxPolicyReloadAction(action uint32) string {
+	switch action {
+	case 1:
+		return "SELinux policy reload SUCCESS - new policy loaded!"
+	case 2:
+		return "SELinux policy reload ATTEMPT (write failed)"
+	case 3:
+		return "SELinux policy load file OPEN ATTEMPT (write intent denied)"
+	default:
+		return fmt.Sprintf("Unknown SELinux policy action: %d", action)
+	}
+}
