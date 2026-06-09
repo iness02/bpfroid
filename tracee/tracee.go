@@ -1800,6 +1800,16 @@ func (t *Tracee) prepareArgsForPrint(ctx *context, args map[argTag]interface{}) 
 		if action, isUint32 := args[t.EncParamName[ctx.EventID%2]["action"]].(uint32); isUint32 {
 			args[t.EncParamName[ctx.EventID%2]["action"]] = PrintSELinuxPolicyReloadAction(action)
 		}
+	case SELinuxProtectedResourceAccessAlertEventID:
+		if accessType, isUint32 := args[t.EncParamName[ctx.EventID%2]["access_type"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["access_type"]] = PrintSELinuxResourceAccessType(accessType)
+		}
+		if result, isUint32 := args[t.EncParamName[ctx.EventID%2]["result"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["result"]] = PrintSELinuxResourceAccessResult(result)
+		}
+		if retval, isInt32 := args[t.EncParamName[ctx.EventID%2]["retval"]].(int32); isInt32 {
+			args[t.EncParamName[ctx.EventID%2]["retval"]] = PrintSELinuxResourceAccessRetval(retval)
+		}
 	case CloneEventID:
 		if flags, isUint64 := args[t.EncParamName[ctx.EventID%2]["flags"]].(uint64); isUint64 {
 			args[t.EncParamName[ctx.EventID%2]["flags"]] = PrintCloneFlags(flags)

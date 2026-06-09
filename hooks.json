@@ -3,6 +3,10 @@
     "api": [],
 
     "syscalls": [
+      {"name": "open"},
+      {"name": "openat"},
+      {"name": "access"},
+      {"name": "faccessat"}
     ],
 
     "uprobes": [],

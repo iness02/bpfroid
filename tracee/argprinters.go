@@ -720,3 +720,56 @@ func PrintSELinuxPolicyReloadAction(action uint32) string {
 		return fmt.Sprintf("Unknown SELinux policy action: %d", action)
 	}
 }
+
+// PrintSELinuxResourceAccessType prints the access type for protected resource access alert
+// Access types: 1=read, 2=write, 3=execute, 4=stat/check, 5=unknown
+func PrintSELinuxResourceAccessType(accessType uint32) string {
+	switch accessType {
+	case 1:
+		return "read"
+	case 2:
+		return "write"
+	case 3:
+		return "execute"
+	case 4:
+		return "stat/check"
+	case 5:
+		return "unknown"
+	default:
+		return fmt.Sprintf("%d", accessType)
+	}
+}
+
+// PrintSELinuxResourceAccessResult prints the access result (allowed/denied)
+// Result: 0=DENIED, 1=ALLOWED
+func PrintSELinuxResourceAccessResult(result uint32) string {
+	switch result {
+	case 0:
+		return "DENIED"
+	case 1:
+		return "ALLOWED"
+	default:
+		return fmt.Sprintf("%d", result)
+	}
+}
+
+// PrintSELinuxResourceAccessRetval prints the return value with error interpretation
+func PrintSELinuxResourceAccessRetval(retval int32) string {
+	if retval >= 0 {
+		return fmt.Sprintf("%d (success)", retval)
+	}
+	switch retval {
+	case -1:
+		return "-1 (EPERM - Operation not permitted)"
+	case -13:
+		return "-13 (EACCES - Permission denied)"
+	case -2:
+		return "-2 (ENOENT - No such file or directory)"
+	case -20:
+		return "-20 (ENOTDIR - Not a directory)"
+	case -21:
+		return "-21 (EISDIR - Is a directory)"
+	default:
+		return fmt.Sprintf("%d", retval)
+	}
+}

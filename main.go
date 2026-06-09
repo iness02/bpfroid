@@ -109,6 +109,7 @@ func main() {
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.IPChangedAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxModeChangeAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxPolicyReloadAlertEventID)
+				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxProtectedResourceAccessAlertEventID)
 			}
 			bpfFile, err := getBPFObject()
 			if err != nil {

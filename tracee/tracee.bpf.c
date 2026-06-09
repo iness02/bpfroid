@@ -135,7 +135,8 @@
 #define IP_CHANGE_ALERT       1015
 #define SELINUX_MODE_CHANGE_ALERT 1016
 #define SELINUX_POLICY_RELOAD_ALERT 1017
-#define MAX_EVENT_ID          1018
+#define SELINUX_PROTECTED_RESOURCE_ACCESS_ALERT 1018
+#define MAX_EVENT_ID          1019
 
 // IP change action types
 #define IP_ACTION_ADD         1
@@ -702,6 +703,191 @@ static __always_inline int is_setenforce_cmd(char *path_p)
         return 1;
     
     return 0;
+}
+
+// Access type constants for SELinux protected resource access alert
+#define ACCESS_TYPE_READ    1
+#define ACCESS_TYPE_WRITE   2
+#define ACCESS_TYPE_EXECUTE 3
+#define ACCESS_TYPE_STAT    4
+#define ACCESS_TYPE_UNKNOWN 5
+
+// Result constants for SELinux protected resource access alert
+#define ACCESS_RESULT_DENIED  0
+#define ACCESS_RESULT_ALLOWED 1
+
+// Sensitive path type constants (returned by get_sensitive_path_type)
+#define SENSITIVE_PATH_NONE            0
+#define SENSITIVE_PATH_DATA_SYSTEM     1
+#define SENSITIVE_PATH_DATA_KEYSTORE   2
+#define SENSITIVE_PATH_DEV             3
+#define SENSITIVE_PATH_SYSTEM_BIN      4
+
+// Check if the path matches one of the sensitive prefixes
+// Returns: 1=/data/system/, 2=/data/misc/keystore, 3=/dev/, 4=/system/bin/, 0=no match
+static __always_inline int get_sensitive_path_type(char *path_p, char *matched_prefix_out)
+{
+    char path[64];
+    bpf_probe_read_str(path, sizeof(path), path_p);
+    
+    // Initialize matched_prefix to empty
+    matched_prefix_out[0] = '\0';
+    
+    // Check for /data/system/ (13 chars including trailing slash)
+    // "/data/system/"
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'a' && path[3] == 't' &&
+        path[4] == 'a' && path[5] == '/' && path[6] == 's' && path[7] == 'y' &&
+        path[8] == 's' && path[9] == 't' && path[10] == 'e' && path[11] == 'm' &&
+        path[12] == '/') {
+        // Copy prefix "/data/system/"
+        matched_prefix_out[0] = '/'; matched_prefix_out[1] = 'd'; matched_prefix_out[2] = 'a';
+        matched_prefix_out[3] = 't'; matched_prefix_out[4] = 'a'; matched_prefix_out[5] = '/';
+        matched_prefix_out[6] = 's'; matched_prefix_out[7] = 'y'; matched_prefix_out[8] = 's';
+        matched_prefix_out[9] = 't'; matched_prefix_out[10] = 'e'; matched_prefix_out[11] = 'm';
+        matched_prefix_out[12] = '/'; matched_prefix_out[13] = '\0';
+        return SENSITIVE_PATH_DATA_SYSTEM;
+    }
+    
+    // Check for /data/misc/keystore (20 chars) - matches exactly or as prefix
+    // "/data/misc/keystore"
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'a' && path[3] == 't' &&
+        path[4] == 'a' && path[5] == '/' && path[6] == 'm' && path[7] == 'i' &&
+        path[8] == 's' && path[9] == 'c' && path[10] == '/' && path[11] == 'k' &&
+        path[12] == 'e' && path[13] == 'y' && path[14] == 's' && path[15] == 't' &&
+        path[16] == 'o' && path[17] == 'r' && path[18] == 'e' && 
+        (path[19] == '\0' || path[19] == '/')) {
+        // Copy prefix "/data/misc/keystore"
+        matched_prefix_out[0] = '/'; matched_prefix_out[1] = 'd'; matched_prefix_out[2] = 'a';
+        matched_prefix_out[3] = 't'; matched_prefix_out[4] = 'a'; matched_prefix_out[5] = '/';
+        matched_prefix_out[6] = 'm'; matched_prefix_out[7] = 'i'; matched_prefix_out[8] = 's';
+        matched_prefix_out[9] = 'c'; matched_prefix_out[10] = '/'; matched_prefix_out[11] = 'k';
+        matched_prefix_out[12] = 'e'; matched_prefix_out[13] = 'y'; matched_prefix_out[14] = 's';
+        matched_prefix_out[15] = 't'; matched_prefix_out[16] = 'o'; matched_prefix_out[17] = 'r';
+        matched_prefix_out[18] = 'e'; matched_prefix_out[19] = '\0';
+        return SENSITIVE_PATH_DATA_KEYSTORE;
+    }
+    
+    // Check for sensitive /dev/ paths (not all /dev/ - that's too noisy)
+    // Only match truly sensitive devices, exclude common harmless ones:
+    // - /dev/null, /dev/zero, /dev/urandom, /dev/random (utility devices)
+    // - /dev/tty, /dev/pts/*, /dev/ptmx (terminal devices)
+    // - /dev/__properties__/* (Android property system)
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' &&
+        path[4] == '/') {
+        
+        // Skip /dev/null
+        if (path[5] == 'n' && path[6] == 'u' && path[7] == 'l' && path[8] == 'l' && path[9] == '\0') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/zero
+        if (path[5] == 'z' && path[6] == 'e' && path[7] == 'r' && path[8] == 'o' && path[9] == '\0') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/urandom
+        if (path[5] == 'u' && path[6] == 'r' && path[7] == 'a' && path[8] == 'n' &&
+            path[9] == 'd' && path[10] == 'o' && path[11] == 'm' && path[12] == '\0') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/random
+        if (path[5] == 'r' && path[6] == 'a' && path[7] == 'n' && path[8] == 'd' &&
+            path[9] == 'o' && path[10] == 'm' && path[11] == '\0') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/tty (terminal)
+        if (path[5] == 't' && path[6] == 't' && path[7] == 'y' && (path[8] == '\0' || path[8] == '/')) {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/pts/ (pseudo-terminals)
+        if (path[5] == 'p' && path[6] == 't' && path[7] == 's' && path[8] == '/') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/ptmx (pseudo-terminal master)
+        if (path[5] == 'p' && path[6] == 't' && path[7] == 'm' && path[8] == 'x' && path[9] == '\0') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/__properties__/ (Android property system - normal behavior)
+        if (path[5] == '_' && path[6] == '_' && path[7] == 'p' && path[8] == 'r' &&
+            path[9] == 'o' && path[10] == 'p' && path[11] == 'e' && path[12] == 'r' &&
+            path[13] == 't' && path[14] == 'i' && path[15] == 'e' && path[16] == 's' &&
+            path[17] == '_' && path[18] == '_' && path[19] == '/') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/ashmem (shared memory - very common)
+        if (path[5] == 'a' && path[6] == 's' && path[7] == 'h' && path[8] == 'm' &&
+            path[9] == 'e' && path[10] == 'm') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/binder (Android binder - very common IPC)
+        if (path[5] == 'b' && path[6] == 'i' && path[7] == 'n' && path[8] == 'd' &&
+            path[9] == 'e' && path[10] == 'r') {
+            return SENSITIVE_PATH_NONE;
+        }
+        // Skip /dev/hwbinder (Android hardware binder)
+        if (path[5] == 'h' && path[6] == 'w' && path[7] == 'b' && path[8] == 'i' &&
+            path[9] == 'n' && path[10] == 'd' && path[11] == 'e' && path[12] == 'r') {
+            return SENSITIVE_PATH_NONE;
+        }
+        
+        // If not excluded, this is a potentially sensitive /dev/ path
+        // Copy prefix "/dev/"
+        matched_prefix_out[0] = '/'; matched_prefix_out[1] = 'd'; matched_prefix_out[2] = 'e';
+        matched_prefix_out[3] = 'v'; matched_prefix_out[4] = '/'; matched_prefix_out[5] = '\0';
+        return SENSITIVE_PATH_DEV;
+    }
+    
+    // Check for /system/bin/ (12 chars including trailing slash)
+    // "/system/bin/"
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'b' && path[9] == 'i' && path[10] == 'n' && path[11] == '/') {
+        // Copy prefix "/system/bin/"
+        matched_prefix_out[0] = '/'; matched_prefix_out[1] = 's'; matched_prefix_out[2] = 'y';
+        matched_prefix_out[3] = 's'; matched_prefix_out[4] = 't'; matched_prefix_out[5] = 'e';
+        matched_prefix_out[6] = 'm'; matched_prefix_out[7] = '/'; matched_prefix_out[8] = 'b';
+        matched_prefix_out[9] = 'i'; matched_prefix_out[10] = 'n'; matched_prefix_out[11] = '/';
+        matched_prefix_out[12] = '\0';
+        return SENSITIVE_PATH_SYSTEM_BIN;
+    }
+    
+    return SENSITIVE_PATH_NONE;
+}
+
+// Get syscall name string based on syscall ID
+static __always_inline void get_syscall_name(int syscall_id, char *name_out)
+{
+    name_out[0] = '\0';
+    
+    if (syscall_id == SYS_OPEN) {
+        name_out[0] = 'o'; name_out[1] = 'p'; name_out[2] = 'e'; name_out[3] = 'n';
+        name_out[4] = '\0';
+    } else if (syscall_id == SYS_OPENAT) {
+        name_out[0] = 'o'; name_out[1] = 'p'; name_out[2] = 'e'; name_out[3] = 'n';
+        name_out[4] = 'a'; name_out[5] = 't'; name_out[6] = '\0';
+    }
+    // For ARM64, we need to check the architecture-specific syscall numbers
+    #if defined(bpf_target_arm64)
+    else if (syscall_id == 21) { // access on ARM64 is 21
+        name_out[0] = 'a'; name_out[1] = 'c'; name_out[2] = 'c'; name_out[3] = 'e';
+        name_out[4] = 's'; name_out[5] = 's'; name_out[6] = '\0';
+    } else if (syscall_id == 48) { // faccessat on ARM64 is 48
+        name_out[0] = 'f'; name_out[1] = 'a'; name_out[2] = 'c'; name_out[3] = 'c';
+        name_out[4] = 'e'; name_out[5] = 's'; name_out[6] = 's'; name_out[7] = 'a';
+        name_out[8] = 't'; name_out[9] = '\0';
+    }
+    #else
+    else if (syscall_id == 21) { // access on x86_64 is 21
+        name_out[0] = 'a'; name_out[1] = 'c'; name_out[2] = 'c'; name_out[3] = 'e';
+        name_out[4] = 's'; name_out[5] = 's'; name_out[6] = '\0';
+    } else if (syscall_id == 269) { // faccessat on x86_64 is 269
+        name_out[0] = 'f'; name_out[1] = 'a'; name_out[2] = 'c'; name_out[3] = 'c';
+        name_out[4] = 'e'; name_out[5] = 's'; name_out[6] = 's'; name_out[7] = 'a';
+        name_out[8] = 't'; name_out[9] = '\0';
+    }
+    #endif
+    else {
+        name_out[0] = 'u'; name_out[1] = 'n'; name_out[2] = 'k'; name_out[3] = 'n';
+        name_out[4] = 'o'; name_out[5] = 'w'; name_out[6] = 'n'; name_out[7] = '\0';
+    }
 }
 
 static __always_inline int init_context(context_t *context)
@@ -1812,6 +1998,98 @@ struct bpf_raw_tracepoint_args *ctx
                             events_perf_submit(ctx);
                         }
                     }
+                }
+            }
+        }
+    }
+    
+    // SELinux Protected Resource Access Alert detection
+    // Monitor open, openat, access, faccessat syscalls for sensitive path access
+    if (event_chosen(SELINUX_PROTECTED_RESOURCE_ACCESS_ALERT) && 
+        (id == SYS_OPENAT || id == SYS_OPEN || id == 21 || id == 269 || id == 48)) {
+        // Read pathname from saved args
+        // For openat: args[1] = pathname; For open/access: args[0] = pathname
+        // For faccessat: args[1] = pathname
+        const char *pathname;
+        int flags_or_mode = 0;
+        
+        if (id == SYS_OPENAT) {
+            pathname = (const char *)saved_args.args[1];
+            flags_or_mode = (int)saved_args.args[2]; // flags
+        } else if (id == SYS_OPEN) {
+            pathname = (const char *)saved_args.args[0];
+            flags_or_mode = (int)saved_args.args[1]; // flags
+        } else if (id == 21) { // access
+            pathname = (const char *)saved_args.args[0];
+            flags_or_mode = (int)saved_args.args[1]; // mode
+        } else if (id == 269 || id == 48) { // faccessat (x86_64: 269, arm64: 48)
+            pathname = (const char *)saved_args.args[1];
+            flags_or_mode = (int)saved_args.args[2]; // mode
+        } else {
+            pathname = (const char *)saved_args.args[0];
+        }
+        
+        // Check for sensitive path match
+        char matched_prefix[32] = {0};
+        char path_buf[64] = {0};
+        bpf_probe_read_str(path_buf, sizeof(path_buf), pathname);
+        
+        int path_type = get_sensitive_path_type(path_buf, matched_prefix);
+        
+        if (path_type != SENSITIVE_PATH_NONE) {
+            // Determine access type based on syscall and flags
+            u32 access_type = ACCESS_TYPE_UNKNOWN;
+            
+            if (id == SYS_OPEN || id == SYS_OPENAT) {
+                // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
+                int access_mode = flags_or_mode & 3;
+                if (access_mode == 0) {
+                    access_type = ACCESS_TYPE_READ;
+                } else if (access_mode == 1) {
+                    access_type = ACCESS_TYPE_WRITE;
+                } else if (access_mode == 2) {
+                    access_type = ACCESS_TYPE_WRITE; // Read+Write, report as write
+                }
+            } else if (id == 21 || id == 269 || id == 48) {
+                // access/faccessat: check mode bits
+                // R_OK=4, W_OK=2, X_OK=1, F_OK=0
+                if (flags_or_mode & 0x02) {
+                    access_type = ACCESS_TYPE_WRITE;
+                } else if (flags_or_mode & 0x01) {
+                    access_type = ACCESS_TYPE_EXECUTE;
+                } else if (flags_or_mode & 0x04) {
+                    access_type = ACCESS_TYPE_READ;
+                } else {
+                    access_type = ACCESS_TYPE_STAT; // F_OK check
+                }
+            }
+            
+            // Determine result (allowed or denied)
+            u32 result = (ret >= 0) ? ACCESS_RESULT_ALLOWED : ACCESS_RESULT_DENIED;
+            
+            // Get syscall name
+            char syscall_name[16] = {0};
+            get_syscall_name(id, syscall_name);
+            
+            // Submit alert
+            buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+            if (submit_p != NULL) {
+                set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+                context_t context = init_and_save_context(ctx, submit_p, SELINUX_PROTECTED_RESOURCE_ACCESS_ALERT, 7, ret);
+                
+                u64 *alert_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+                if (alert_tags) {
+                    int retval_int = (int)ret;
+                    
+                    // Args: syscall_name, pathname, matched_prefix, access_type, flags_or_mode, retval, result
+                    save_str_to_buf(submit_p, (void *)syscall_name, DEC_ARG(0, *alert_tags));
+                    save_str_to_buf(submit_p, (void *)path_buf, DEC_ARG(1, *alert_tags));
+                    save_str_to_buf(submit_p, (void *)matched_prefix, DEC_ARG(2, *alert_tags));
+                    save_to_submit_buf(submit_p, &access_type, sizeof(u32), UINT_T, DEC_ARG(3, *alert_tags));
+                    save_to_submit_buf(submit_p, &flags_or_mode, sizeof(int), INT_T, DEC_ARG(4, *alert_tags));
+                    save_to_submit_buf(submit_p, &retval_int, sizeof(int), INT_T, DEC_ARG(5, *alert_tags));
+                    save_to_submit_buf(submit_p, &result, sizeof(u32), UINT_T, DEC_ARG(6, *alert_tags));
+                    events_perf_submit(ctx);
                 }
             }
         }
