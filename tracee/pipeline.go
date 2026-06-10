@@ -193,6 +193,20 @@ func (t *Tracee) prepareEventForPrint(done <-chan struct{}, in <-chan RawEvent) 
 				errc <- err
 				continue
 			}
+
+			// Check for SELinux denial events and track for repeated denial alerts
+			if t.selinuxDenialTracker != nil && rawEvent.Ctx.EventID == SELinuxProtectedResourceAccessAlertEventID {
+				repeatedAlert := t.checkAndRecordSELinuxDenial(&rawEvent, &evt)
+				if repeatedAlert != nil {
+					// Emit the repeated denial alert first
+					select {
+					case out <- *repeatedAlert:
+					case <-done:
+						return
+					}
+				}
+			}
+
 			select {
 			case out <- evt:
 			case <-done:
@@ -201,6 +215,145 @@ func (t *Tracee) prepareEventForPrint(done <-chan struct{}, in <-chan RawEvent) 
 		}
 	}()
 	return out, errc, nil
+}
+
+// checkAndRecordSELinuxDenial checks if a SELinux protected resource access event is a denial,
+// records it in the denial tracker, and returns a repeated denial alert event if threshold is reached
+func (t *Tracee) checkAndRecordSELinuxDenial(rawEvent *RawEvent, evt *external.Event) *external.Event {
+	// Extract the result field to check if this is a denial
+	// The result field is the 7th argument (index 6) based on EventsIDToParams
+	// result: 0=DENIED, 1=ALLOWED
+	resultArg := evt.Args[6]
+	resultStr, ok := resultArg.Value.(string)
+	if !ok {
+		return nil
+	}
+	
+	// Only track denials (result contains "DENIED")
+	if resultStr != "DENIED" {
+		return nil
+	}
+
+	// Extract pathname (index 1) and access_type (index 3)
+	pathname := ""
+	if pathArg := evt.Args[1]; pathArg.Value != nil {
+		if pathStr, ok := pathArg.Value.(string); ok {
+			pathname = pathStr
+		}
+	}
+
+	accessType := ""
+	if accessArg := evt.Args[3]; accessArg.Value != nil {
+		if accessStr, ok := accessArg.Value.(string); ok {
+			accessType = accessStr
+		}
+	}
+
+	// Create the denial key for tracking
+	// Truncate pathname to prefix for grouping similar denials
+	pathPrefix := pathname
+	if len(pathPrefix) > 50 {
+		pathPrefix = pathPrefix[:50]
+	}
+
+	key := SELinuxDenialKey{
+		PID:         evt.ProcessID,
+		UID:         uint32(evt.UserID),
+		ProcessName: evt.ProcessName,
+		Operation:   accessType,
+		PathPrefix:  pathPrefix,
+	}
+
+	// Record the denial and check if we should alert
+	shouldAlert, count, firstTs, lastTs, cooldownActive := t.selinuxDenialTracker.RecordDenial(
+		key,
+		uint64(evt.Timestamp*1000000), // convert to microseconds
+		pathname,
+		accessType,
+	)
+
+	if !shouldAlert {
+		return nil
+	}
+
+	// Create a synthetic repeated denial alert event
+	return t.createRepeatedDenialAlertEvent(evt, count, firstTs, lastTs, cooldownActive)
+}
+
+// createRepeatedDenialAlertEvent creates a synthetic event for the repeated denial alert
+func (t *Tracee) createRepeatedDenialAlertEvent(originalEvt *external.Event, denialCount uint32, firstTs uint64, lastTs uint64, cooldownActive bool) *external.Event {
+	// Get params from EventsIDToParams for SELinuxRepeatedDenialAlertEventID
+	params := EventsIDToParams[SELinuxRepeatedDenialAlertEventID]
+
+	// Build the args
+	args := make([]external.Argument, len(params))
+	for i, param := range params {
+		args[i] = external.Argument{
+			ArgMeta: param,
+		}
+	}
+
+	// Populate the argument values
+	// {Type: "const char*", Name: "process_name"}
+	args[0].Value = originalEvt.ProcessName
+	// {Type: "int", Name: "pid"}
+	args[1].Value = int32(originalEvt.ProcessID)
+	// {Type: "int", Name: "tgid"}
+	args[2].Value = int32(originalEvt.ProcessID) // TGID equals PID for the main thread
+	// {Type: "unsigned int", Name: "uid"}
+	args[3].Value = uint32(originalEvt.UserID)
+	// {Type: "const char*", Name: "last_denied_path"}
+	if len(originalEvt.Args) > 1 {
+		if pathStr, ok := originalEvt.Args[1].Value.(string); ok {
+			args[4].Value = pathStr
+		} else {
+			args[4].Value = ""
+		}
+	}
+	// {Type: "const char*", Name: "last_operation"}
+	if len(originalEvt.Args) > 3 {
+		if opStr, ok := originalEvt.Args[3].Value.(string); ok {
+			args[5].Value = opStr
+		} else {
+			args[5].Value = ""
+		}
+	}
+	// {Type: "unsigned int", Name: "denial_count"}
+	args[6].Value = FormatSELinuxRepeatedDenialSummary(denialCount, t.selinuxDenialTracker.GetTimeWindowSecs())
+	// {Type: "unsigned int", Name: "time_window_secs"}
+	args[7].Value = t.selinuxDenialTracker.GetTimeWindowSecs()
+	// {Type: "unsigned int", Name: "threshold"}
+	args[8].Value = t.selinuxDenialTracker.GetThreshold()
+	// {Type: "unsigned long", Name: "first_denial_ts"}
+	args[9].Value = firstTs
+	// {Type: "unsigned long", Name: "last_denial_ts"}
+	args[10].Value = lastTs
+	// {Type: "const char*", Name: "cooldown_state"}
+	args[11].Value = PrintSELinuxRepeatedDenialCooldownState(cooldownActive)
+
+	// Create the event
+	alertEvt := &external.Event{
+		Timestamp:           originalEvt.Timestamp,
+		ProcessID:           originalEvt.ProcessID,
+		ThreadID:            originalEvt.ThreadID,
+		ParentProcessID:     originalEvt.ParentProcessID,
+		HostProcessID:       originalEvt.HostProcessID,
+		HostThreadID:        originalEvt.HostThreadID,
+		HostParentProcessID: originalEvt.HostParentProcessID,
+		UserID:              originalEvt.UserID,
+		MountNS:             originalEvt.MountNS,
+		PIDNS:               originalEvt.PIDNS,
+		ProcessName:         originalEvt.ProcessName,
+		HostName:            originalEvt.HostName,
+		EventID:             int(SELinuxRepeatedDenialAlertEventID),
+		EventName:           EventsIDToEvent[SELinuxRepeatedDenialAlertEventID].Name,
+		ArgsNum:             len(args),
+		ReturnValue:         0,
+		Args:                args,
+		StackAddresses:      nil,
+	}
+
+	return alertEvt
 }
 
 func (t *Tracee) printEvent(done <-chan struct{}, in <-chan external.Event) (<-chan error, error) {
