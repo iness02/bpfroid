@@ -773,3 +773,52 @@ func PrintSELinuxResourceAccessRetval(retval int32) string {
 		return fmt.Sprintf("%d", retval)
 	}
 }
+
+// PrintSELinuxPermissionMask converts the inode permission mask to human readable format
+// Mask values: MAY_EXEC=1, MAY_WRITE=2, MAY_READ=4, MAY_APPEND=8
+func PrintSELinuxPermissionMask(mask int32) string {
+	var perms []string
+	if mask&4 != 0 {
+		perms = append(perms, "MAY_READ")
+	}
+	if mask&2 != 0 {
+		perms = append(perms, "MAY_WRITE")
+	}
+	if mask&1 != 0 {
+		perms = append(perms, "MAY_EXEC")
+	}
+	if mask&8 != 0 {
+		perms = append(perms, "MAY_APPEND")
+	}
+	if len(perms) == 0 {
+		return fmt.Sprintf("%d", mask)
+	}
+	return fmt.Sprintf("%s(%d)", strings.Join(perms, "|"), mask)
+}
+
+// PrintSELinuxDenialError converts the SELinux denial return code to human readable format
+func PrintSELinuxDenialError(ret int32) string {
+	switch ret {
+	case -1:
+		return "EPERM(-1)"
+	case -13:
+		return "EACCES(-13)"
+	case -2:
+		return "ENOENT(-2)"
+	default:
+		return fmt.Sprintf("%d", ret)
+	}
+}
+
+// FormatSELinuxRepeatedDenialSummary formats the denial count summary
+func FormatSELinuxRepeatedDenialSummary(count uint32, windowSecs uint32) string {
+	return fmt.Sprintf("%d denials in %ds", count, windowSecs)
+}
+
+// PrintSELinuxRepeatedDenialCooldownState prints whether cooldown is active
+func PrintSELinuxRepeatedDenialCooldownState(cooldownActive bool) string {
+	if cooldownActive {
+		return "COOLDOWN_ACTIVE"
+	}
+	return "ALERT_TRIGGERED"
+}

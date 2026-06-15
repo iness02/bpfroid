@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -253,6 +254,8 @@ type Tracee struct {
 	uprobesDesc map[uint64]hookDescriptor
 	apiHooks    []hookDescriptor
 	noCodeHooks []hookDescriptor
+	// SELinux denial tracking
+	selinuxDenialTracker *SELinuxDenialTracker
 }
 
 type counter int32
@@ -273,6 +276,124 @@ type statsStore struct {
 	errorCounter  counter
 	lostEvCounter counter
 	lostWrCounter counter
+}
+
+// SELinuxDenialKey uniquely identifies a process for tracking denial patterns
+type SELinuxDenialKey struct {
+	PID         int
+	UID         uint32
+	ProcessName string
+	Operation   string
+	PathPrefix  string
+}
+
+// SELinuxDenialRecord tracks denial information for a specific key
+type SELinuxDenialRecord struct {
+	Count         uint32
+	FirstDenialTs uint64
+	LastDenialTs  uint64
+	LastPath      string
+	LastOperation string
+	AlertedTs     uint64 // Last time we alerted for this key
+}
+
+// SELinuxDenialTracker tracks SELinux denial events for repeated denial alert generation
+type SELinuxDenialTracker struct {
+	denials      map[SELinuxDenialKey]*SELinuxDenialRecord
+	threshold    uint32 // Number of denials to trigger alert
+	windowSecs   uint32 // Time window in seconds
+	cooldownSecs uint32 // Cooldown between alerts for same key
+	mu           sync.Mutex
+}
+
+// NewSELinuxDenialTracker creates a new SELinux denial tracker
+func NewSELinuxDenialTracker(threshold, windowSecs, cooldownSecs uint32) *SELinuxDenialTracker {
+	return &SELinuxDenialTracker{
+		denials:      make(map[SELinuxDenialKey]*SELinuxDenialRecord),
+		threshold:    threshold,
+		windowSecs:   windowSecs,
+		cooldownSecs: cooldownSecs,
+	}
+}
+
+// RecordDenial records a denial event and returns whether an alert should be triggered
+// Returns: shouldAlert, count, firstTs, lastTs, cooldownActive
+func (t *SELinuxDenialTracker) RecordDenial(key SELinuxDenialKey, timestamp uint64, path, operation string) (bool, uint32, uint64, uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Convert timestamp to seconds for window comparison
+	tsSeconds := timestamp / 1000000
+
+	record, exists := t.denials[key]
+	if !exists {
+		record = &SELinuxDenialRecord{
+			Count:         1,
+			FirstDenialTs: timestamp,
+			LastDenialTs:  timestamp,
+			LastPath:      path,
+			LastOperation: operation,
+		}
+		t.denials[key] = record
+		return false, 1, timestamp, timestamp, false
+	}
+
+	// Check if outside time window - reset if so
+	firstTsSeconds := record.FirstDenialTs / 1000000
+	if tsSeconds-firstTsSeconds > uint64(t.windowSecs) {
+		record.Count = 1
+		record.FirstDenialTs = timestamp
+		record.LastDenialTs = timestamp
+		record.LastPath = path
+		record.LastOperation = operation
+		return false, 1, timestamp, timestamp, false
+	}
+
+	// Update record
+	record.Count++
+	record.LastDenialTs = timestamp
+	record.LastPath = path
+	record.LastOperation = operation
+
+	// Check if we should alert
+	if record.Count >= t.threshold {
+		// Check cooldown
+		alertedTsSeconds := record.AlertedTs / 1000000
+		if record.AlertedTs > 0 && tsSeconds-alertedTsSeconds < uint64(t.cooldownSecs) {
+			// Still in cooldown
+			return false, record.Count, record.FirstDenialTs, record.LastDenialTs, true
+		}
+
+		// Trigger alert and update alerted timestamp
+		record.AlertedTs = timestamp
+		return true, record.Count, record.FirstDenialTs, record.LastDenialTs, false
+	}
+
+	return false, record.Count, record.FirstDenialTs, record.LastDenialTs, false
+}
+
+// GetThreshold returns the denial threshold
+func (t *SELinuxDenialTracker) GetThreshold() uint32 {
+	return t.threshold
+}
+
+// GetTimeWindowSecs returns the time window in seconds
+func (t *SELinuxDenialTracker) GetTimeWindowSecs() uint32 {
+	return t.windowSecs
+}
+
+// CleanupOldRecords removes records older than the time window
+func (t *SELinuxDenialTracker) CleanupOldRecords(currentTs uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	currentTsSeconds := currentTs / 1000000
+	for key, record := range t.denials {
+		lastTsSeconds := record.LastDenialTs / 1000000
+		if currentTsSeconds-lastTsSeconds > uint64(t.windowSecs*2) {
+			delete(t.denials, key)
+		}
+	}
 }
 
 // New creates a new Tracee instance based on a given valid TraceeConfig
@@ -364,6 +485,12 @@ func New(cfg TraceeConfig) (*Tracee, error) {
 	t.oatBases = make(map[string]uint64)
 	t.oatdataOffs = make(map[string]uint64)
 	t.uprobesDesc = make(map[uint64]hookDescriptor)
+
+	// Initialize SELinux denial tracker with defaults:
+	// threshold=5 denials, window=30 seconds, cooldown=60 seconds
+	if cfg.SecurityAlerts {
+		t.selinuxDenialTracker = NewSELinuxDenialTracker(5, 30, 60)
+	}
 
 	err = t.initBPF(cfg.BPFObjPath)
 	if err != nil {

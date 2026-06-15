@@ -12,7 +12,15 @@ The SELinux repeated denial alert detects when a process triggers multiple SELin
 ### Alert Parameters
 - **Threshold**: 5 denials from the same process
 - **Time Window**: 30 seconds
-- **Cooldown**: 60 seconds between alerts for the same process
+- **Cooldown**: 60 seconds between alerts for the same key
+
+### Two Detection Modes
+
+1. **SELinuxDenialEventID (1019)**: Low-level kernel detection via `security_inode_permission` kprobe. Captures all SELinux permission denials at the kernel level.
+
+2. **SELinuxProtectedResourceAccessAlertEventID (1018)**: High-level detection for accesses to protected resources (SELinux policy files, etc.) with DENIED result.
+
+Both modes feed into the same denial tracker to generate `SELinuxRepeatedDenialAlertEventID` (1020) alerts.
 
 ## Build Instructions
 
@@ -99,20 +107,20 @@ done
 
 ## Expected Output
 
-### Individual SELinux Denial Events (Event ID 1018)
+### Individual SELinux Denial Events (Event ID 1019)
 
 ```
 TIME             UID    COMM             PID    TID    RET    EVENT              ARGS
-1234567890.123   10001  testapp          1234   1234   0      selinux_denial    pathname=/data/system/packages.xml mask=MAY_READ(4) ret=EACCES(-13) dev=253:2 inode=12345
+1234567890.123   10001  testapp          1234   1234   -13    selinux_denial    pathname=/data/system/packages.xml mask=MAY_READ(4) ret=EACCES(-13) dev=253:2 inode=12345
 ```
 
-### Repeated Denial Alert (Event ID 1019)
+### Repeated Denial Alert (Event ID 1020)
 
 After 5+ denials within 30 seconds from the same process:
 
 ```
 TIME             UID    COMM             PID    TID    RET    EVENT                           ARGS
-1234567890.456   10001  testapp          1234   1234   0      selinux_repeated_denial_alert  denial_count=5 denials in 30s time_window=30 last_denied_path=/data/system/packages.xml last_mask=4
+1234567890.456   10001  testapp          1234   1234   0      selinux_repeated_denial_alert  process_name=testapp pid=1234 tgid=1234 uid=10001 last_denied_path=/data/system/packages.xml last_operation=MAY_READ(4) denial_count=5 time_window_secs=30 threshold=5 ...
 ```
 
 ### JSON Output Format
@@ -124,13 +132,21 @@ TIME             UID    COMM             PID    TID    RET    EVENT             
   "threadId": 1234,
   "userId": 10001,
   "processName": "testapp",
-  "eventId": 1019,
+  "eventId": 1020,
   "eventName": "selinux_repeated_denial_alert",
   "args": [
-    {"name": "denial_count", "type": "unsigned int", "value": "5 denials in 30s"},
-    {"name": "time_window", "type": "unsigned int", "value": 30},
+    {"name": "process_name", "type": "const char*", "value": "testapp"},
+    {"name": "pid", "type": "int", "value": 1234},
+    {"name": "tgid", "type": "int", "value": 1234},
+    {"name": "uid", "type": "unsigned int", "value": 10001},
     {"name": "last_denied_path", "type": "const char*", "value": "/data/system/packages.xml"},
-    {"name": "last_mask", "type": "int", "value": 4}
+    {"name": "last_operation", "type": "const char*", "value": "MAY_READ(4)"},
+    {"name": "denial_count", "type": "unsigned int", "value": "5 denials in 30s"},
+    {"name": "time_window_secs", "type": "unsigned int", "value": 30},
+    {"name": "threshold", "type": "unsigned int", "value": 5},
+    {"name": "first_denial_ts", "type": "unsigned long", "value": 1234567800000000},
+    {"name": "last_denial_ts", "type": "unsigned long", "value": 1234567890123000},
+    {"name": "cooldown_state", "type": "const char*", "value": "ALERT_TRIGGERED"}
   ]
 }
 ```
@@ -144,12 +160,12 @@ TIME             UID    COMM             PID    TID    RET    EVENT             
 
 2. **Trigger denials** (use any method above)
 
-3. **Check for individual denial events** (Event ID 1018)
+3. **Check for individual denial events** (Event ID 1019)
    ```bash
    grep "selinux_denial" /data/local/tmp/tracee_output.json
    ```
 
-4. **Check for repeated denial alerts** (Event ID 1019)
+4. **Check for repeated denial alerts** (Event ID 1020)
    ```bash
    grep "selinux_repeated_denial_alert" /data/local/tmp/tracee_output.json
    ```
@@ -194,12 +210,14 @@ t.selinuxDenialTracker = NewSELinuxDenialTracker(10, 60, 120)
 
 ### Userspace Side (tracee.go, pipeline.go)
 - `SELinuxDenialTracker`: Maintains per-process denial counts with timestamps
+- `SELinuxDenialKey`: Unique identifier combining PID, UID, ProcessName, Operation, PathPrefix
 - `RecordDenial()`: Adds denial to tracker, returns alert info if threshold reached
-- `prepareEventForPrint()`: Injects synthetic alert events into the pipeline
+- `checkAndRecordSELinuxDenial()`: Handles SELinuxProtectedResourceAccessAlertEventID events
+- `checkAndRecordSELinuxInodeDenial()`: Handles SELinuxDenialEventID events from kprobe
 
 ### Event Flow
 1. Kernel: `security_inode_permission()` returns negative value (denied)
-2. eBPF: kretprobe captures denial, sends `SELinuxDenialEventID` (1018)
-3. Userspace: `prepareEventForPrint()` receives denial, calls `RecordDenial()`
-4. If threshold reached: Synthetic `SELinuxRepeatedDenialAlertEventID` (1019) injected
+2. eBPF: kretprobe captures denial, sends `SELinuxDenialEventID` (1019)
+3. Userspace: `prepareEventForPrint()` receives denial, calls tracker
+4. If threshold reached: Synthetic `SELinuxRepeatedDenialAlertEventID` (1020) injected
 5. Both events printed to output

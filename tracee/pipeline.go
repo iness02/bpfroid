@@ -195,8 +195,15 @@ func (t *Tracee) prepareEventForPrint(done <-chan struct{}, in <-chan RawEvent) 
 			}
 
 			// Check for SELinux denial events and track for repeated denial alerts
-			if t.selinuxDenialTracker != nil && rawEvent.Ctx.EventID == SELinuxProtectedResourceAccessAlertEventID {
-				repeatedAlert := t.checkAndRecordSELinuxDenial(&rawEvent, &evt)
+			// Tracks both SELinuxProtectedResourceAccessAlertEventID (high-level) and
+			// SELinuxDenialEventID (low-level kernel security_inode_permission denials)
+			if t.selinuxDenialTracker != nil {
+				var repeatedAlert *external.Event
+				if rawEvent.Ctx.EventID == SELinuxProtectedResourceAccessAlertEventID {
+					repeatedAlert = t.checkAndRecordSELinuxDenial(&rawEvent, &evt)
+				} else if rawEvent.Ctx.EventID == SELinuxDenialEventID {
+					repeatedAlert = t.checkAndRecordSELinuxInodeDenial(&rawEvent, &evt)
+				}
 				if repeatedAlert != nil {
 					// Emit the repeated denial alert first
 					select {
@@ -354,6 +361,57 @@ func (t *Tracee) createRepeatedDenialAlertEvent(originalEvt *external.Event, den
 	}
 
 	return alertEvt
+}
+
+// checkAndRecordSELinuxInodeDenial handles SELinuxDenialEventID events from security_inode_permission kprobe
+// These are low-level kernel permission denials (always denied, no result field to check)
+func (t *Tracee) checkAndRecordSELinuxInodeDenial(rawEvent *RawEvent, evt *external.Event) *external.Event {
+	// Extract pathname (index 0) from SELinuxDenialEventID event
+	pathname := ""
+	if len(evt.Args) > 0 && evt.Args[0].Value != nil {
+		if pathStr, ok := evt.Args[0].Value.(string); ok {
+			pathname = pathStr
+		}
+	}
+
+	// Extract mask (index 1) to determine operation type
+	operation := "permission_check"
+	if len(evt.Args) > 1 && evt.Args[1].Value != nil {
+		// mask is already formatted by PrintSELinuxPermissionMask
+		if maskStr, ok := evt.Args[1].Value.(string); ok {
+			operation = maskStr
+		}
+	}
+
+	// Create the denial key for tracking
+	// Truncate pathname to prefix for grouping similar denials
+	pathPrefix := pathname
+	if len(pathPrefix) > 50 {
+		pathPrefix = pathPrefix[:50]
+	}
+
+	key := SELinuxDenialKey{
+		PID:         evt.ProcessID,
+		UID:         uint32(evt.UserID),
+		ProcessName: evt.ProcessName,
+		Operation:   operation,
+		PathPrefix:  pathPrefix,
+	}
+
+	// Record the denial and check if we should alert
+	shouldAlert, count, firstTs, lastTs, cooldownActive := t.selinuxDenialTracker.RecordDenial(
+		key,
+		uint64(evt.Timestamp*1000000), // convert to microseconds
+		pathname,
+		operation,
+	)
+
+	if !shouldAlert {
+		return nil
+	}
+
+	// Create a synthetic repeated denial alert event
+	return t.createRepeatedDenialAlertEvent(evt, count, firstTs, lastTs, cooldownActive)
 }
 
 func (t *Tracee) printEvent(done <-chan struct{}, in <-chan external.Event) (<-chan error, error) {

@@ -136,7 +136,9 @@
 #define SELINUX_MODE_CHANGE_ALERT 1016
 #define SELINUX_POLICY_RELOAD_ALERT 1017
 #define SELINUX_PROTECTED_RESOURCE_ACCESS_ALERT 1018
-#define MAX_EVENT_ID          1019
+#define SELINUX_DENIAL        1019
+#define SELINUX_REPEATED_DENIAL_ALERT 1020
+#define MAX_EVENT_ID          1021
 
 // IP change action types
 #define IP_ACTION_ADD         1
@@ -3295,6 +3297,120 @@ int BPF_KPROBE(trace_inet_del_ifa)
 
     // Save netlink portid (0 = kernel/DHCP initiated, non-zero = process netlink socket PID)
     save_to_submit_buf(submit_p, &nl_portid, sizeof(u32), UINT_T, DEC_ARG(4, *tags));
+
+    events_perf_submit(ctx);
+    return 0;
+}
+
+/*
+ * SELinux Denial Detection
+ *
+ * These probes hook into security_inode_permission to detect SELinux denials.
+ * - kprobe saves the arguments (inode, mask)
+ * - kretprobe checks the return value; negative = denied (e.g., -EACCES, -EPERM)
+ *
+ * Function signature:
+ *   int security_inode_permission(struct inode *inode, int mask)
+ *
+ * The mask contains MAY_READ (4), MAY_WRITE (2), MAY_EXEC (1), MAY_APPEND (8).
+ * Return value: 0 = allowed, negative = denied
+ */
+
+// Structure to pass arguments from kprobe to kretprobe
+typedef struct selinux_denial_args {
+    struct inode *inode;
+    int mask;
+} selinux_denial_args_t;
+
+// Map to store args between kprobe and kretprobe
+BPF_HASH(selinux_denial_args_map, u64, selinux_denial_args_t);
+
+// Kprobe entry: save arguments for later use in kretprobe
+SEC("kprobe/security_inode_permission")
+int BPF_KPROBE(trace_security_inode_permission)
+{
+    // Only process if event is chosen
+    if (!event_chosen(SELINUX_DENIAL))
+        return 0;
+
+    u64 id = bpf_get_current_pid_tgid();
+    
+    selinux_denial_args_t args = {};
+    args.inode = (struct inode *)PT_REGS_PARM1(ctx);
+    args.mask = (int)PT_REGS_PARM2(ctx);
+    
+    bpf_map_update_elem(&selinux_denial_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+// Kretprobe: check return value and emit event if denied
+SEC("kretprobe/security_inode_permission")
+int BPF_KRETPROBE(trace_ret_security_inode_permission)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    
+    selinux_denial_args_t *args = bpf_map_lookup_elem(&selinux_denial_args_map, &id);
+    if (!args) {
+        return 0;
+    }
+    
+    // Get return value - negative means denied
+    int ret = (int)PT_REGS_RC(ctx);
+    
+    // Clean up map entry first
+    struct inode *inode = args->inode;
+    int mask = args->mask;
+    bpf_map_delete_elem(&selinux_denial_args_map, &id);
+    
+    // Only emit event if permission was denied (ret < 0)
+    if (ret >= 0) {
+        return 0;
+    }
+    
+    if (!inode) {
+        return 0;
+    }
+    
+    buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+    if (submit_p == NULL)
+        return 0;
+    set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+
+    context_t context = init_and_save_context(ctx, submit_p, SELINUX_DENIAL, 5 /*argnum*/, ret);
+
+    u64 *tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+    if (!tags) {
+        return -1;
+    }
+
+    // Get device id from inode's superblock
+    struct super_block *sb = READ_KERN(inode->i_sb);
+    dev_t dev = 0;
+    if (sb) {
+        dev = READ_KERN(sb->s_dev);
+    }
+
+    // Get inode number
+    unsigned long ino = READ_KERN(inode->i_ino);
+
+    // Save placeholder for pathname - security_inode_permission only provides inode,
+    // getting the actual path is complex and unreliable from kretprobe context
+    // Format: "inode:<ino>@dev:<dev>" to provide identification info
+    char path_info[64] = {0};
+    // Just save empty string, let userspace handle path resolution if needed
+    save_str_to_buf(submit_p, path_info, DEC_ARG(0, *tags));
+
+    // Save mask
+    save_to_submit_buf(submit_p, &mask, sizeof(int), INT_T, DEC_ARG(1, *tags));
+
+    // Save return value (error code)
+    save_to_submit_buf(submit_p, &ret, sizeof(int), INT_T, DEC_ARG(2, *tags));
+
+    // Save device id
+    save_to_submit_buf(submit_p, &dev, sizeof(dev_t), DEV_T_T, DEC_ARG(3, *tags));
+
+    // Save inode number
+    save_to_submit_buf(submit_p, &ino, sizeof(unsigned long), ULONG_T, DEC_ARG(4, *tags));
 
     events_perf_submit(ctx);
     return 0;
