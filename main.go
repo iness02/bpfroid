@@ -112,6 +112,7 @@ func main() {
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxProtectedResourceAccessAlertEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxDenialEventID)
 				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SELinuxRepeatedDenialAlertEventID)
+				cfg.Filter.EventsToTrace = append(cfg.Filter.EventsToTrace, tracee.SuSudoAlertEventID)
 			}
 			bpfFile, err := getBPFObject()
 			if err != nil {

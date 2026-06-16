@@ -160,6 +160,7 @@ const (
 	SELinuxProtectedResourceAccessAlertEventID
 	SELinuxDenialEventID
 	SELinuxRepeatedDenialAlertEventID
+	SuSudoAlertEventID
 	MaxEventID
 )
 
@@ -539,6 +540,7 @@ var EventsIDToEvent = map[int32]EventConfig{
 	SELinuxProtectedResourceAccessAlertEventID: {ID: SELinuxProtectedResourceAccessAlertEventID, ID32Bit: sys32undefined, Name: "selinux_protected_resource_access_alert", Probes: []probe{}, Sets: []string{}},
 	SELinuxDenialEventID:       {ID: SELinuxDenialEventID, ID32Bit: sys32undefined, Name: "selinux_denial", Probes: []probe{{event: "security_inode_permission", attach: kprobe, fn: "trace_security_inode_permission"}, {event: "security_inode_permission", attach: kretprobe, fn: "trace_ret_security_inode_permission"}}, Sets: []string{}},
 	SELinuxRepeatedDenialAlertEventID: {ID: SELinuxRepeatedDenialAlertEventID, ID32Bit: sys32undefined, Name: "selinux_repeated_denial_alert", Probes: []probe{}, Sets: []string{}},
+	SuSudoAlertEventID:         {ID: SuSudoAlertEventID, ID32Bit: sys32undefined, Name: "su_sudo_alert", Probes: []probe{}, Sets: []string{}},
 }
 
 // EventsIDToParams is list of the parameters (name and type) used by the events
@@ -884,6 +886,7 @@ var EventsIDToParams = map[int32][]external.ArgMeta{
 	SELinuxProtectedResourceAccessAlertEventID: {{Type: "const char*", Name: "syscall_name"}, {Type: "const char*", Name: "pathname"}, {Type: "const char*", Name: "matched_prefix"}, {Type: "unsigned int", Name: "access_type"}, {Type: "int", Name: "flags_or_mode"}, {Type: "int", Name: "retval"}, {Type: "unsigned int", Name: "result"}},
 	SELinuxDenialEventID:       {{Type: "const char*", Name: "pathname"}, {Type: "int", Name: "mask"}, {Type: "int", Name: "ret"}, {Type: "dev_t", Name: "dev"}, {Type: "unsigned long", Name: "inode"}},
 	SELinuxRepeatedDenialAlertEventID: {{Type: "const char*", Name: "process_name"}, {Type: "int", Name: "pid"}, {Type: "int", Name: "tgid"}, {Type: "unsigned int", Name: "uid"}, {Type: "const char*", Name: "last_denied_path"}, {Type: "const char*", Name: "last_operation"}, {Type: "unsigned int", Name: "denial_count"}, {Type: "unsigned int", Name: "time_window_secs"}, {Type: "unsigned int", Name: "threshold"}, {Type: "unsigned long", Name: "first_denial_ts"}, {Type: "unsigned long", Name: "last_denial_ts"}, {Type: "const char*", Name: "cooldown_state"}},
+	SuSudoAlertEventID:         {{Type: "unsigned int", Name: "command_type"}, {Type: "const char*", Name: "pathname"}, {Type: "unsigned int", Name: "result"}},
 	SchedProcessExitEventID:    {},
 	PidfdSendSignalEventID:     {{Type: "int", Name: "pidfd"}, {Type: "int", Name: "sig"}, {Type: "siginfo_t*", Name: "info"}, {Type: "unsigned int", Name: "flags"}},
 	IoUringSetupEventID:        {{Type: "unsigned int", Name: "entries"}, {Type: "struct io_uring_params*", Name: "p"}},

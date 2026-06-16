@@ -138,7 +138,8 @@
 #define SELINUX_PROTECTED_RESOURCE_ACCESS_ALERT 1018
 #define SELINUX_DENIAL        1019
 #define SELINUX_REPEATED_DENIAL_ALERT 1020
-#define MAX_EVENT_ID          1021
+#define SU_SUDO_ALERT         1021
+#define MAX_EVENT_ID          1022
 
 // IP change action types
 #define IP_ACTION_ADD         1
@@ -706,6 +707,144 @@ static __always_inline int is_setenforce_cmd(char *path_p)
     
     return 0;
 }
+
+// Check if the path is a su or sudo command
+// Supports full path matching and basename matching
+// Returns: 1 for su, 2 for sudo, 0 if not matched
+static __always_inline int is_su_sudo_cmd(char *path_p)
+{
+    char path[64];
+    int len = bpf_probe_read_str(path, sizeof(path), path_p);
+    if (len <= 0)
+        return 0;
+    
+    // Find the last '/' to get basename
+    int last_slash = -1;
+    #pragma unroll
+    for (int i = 0; i < 63 && path[i] != '\0'; i++) {
+        if (path[i] == '/')
+            last_slash = i;
+    }
+    
+    // Check basename "su" (exactly 2 chars after last slash, then null)
+    // basename starts at last_slash + 1
+    if (last_slash >= 0 && last_slash < 61) {
+        int base = last_slash + 1;
+        // Check for "su\0"
+        if (path[base] == 's' && path[base+1] == 'u' && path[base+2] == '\0')
+            return 1;
+        // Check for "sudo\0"
+        if (path[base] == 's' && path[base+1] == 'u' && path[base+2] == 'd' && 
+            path[base+3] == 'o' && path[base+4] == '\0')
+            return 2;
+    }
+    
+    // Also check if path itself is just "su" or "sudo" (no leading slash)
+    if (path[0] == 's' && path[1] == 'u' && path[2] == '\0')
+        return 1;
+    if (path[0] == 's' && path[1] == 'u' && path[2] == 'd' && path[3] == 'o' && path[4] == '\0')
+        return 2;
+    
+    // Full path matching for common su locations
+    // /system/bin/su
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'b' && path[9] == 'i' && path[10] == 'n' && path[11] == '/' &&
+        path[12] == 's' && path[13] == 'u' && path[14] == '\0')
+        return 1;
+    
+    // /system/xbin/su
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'x' && path[9] == 'b' && path[10] == 'i' && path[11] == 'n' &&
+        path[12] == '/' && path[13] == 's' && path[14] == 'u' && path[15] == '\0')
+        return 1;
+    
+    // /vendor/bin/su
+    if (path[0] == '/' && path[1] == 'v' && path[2] == 'e' && path[3] == 'n' &&
+        path[4] == 'd' && path[5] == 'o' && path[6] == 'r' && path[7] == '/' &&
+        path[8] == 'b' && path[9] == 'i' && path[10] == 'n' && path[11] == '/' &&
+        path[12] == 's' && path[13] == 'u' && path[14] == '\0')
+        return 1;
+    
+    // /sbin/su
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'b' && path[3] == 'i' &&
+        path[4] == 'n' && path[5] == '/' && path[6] == 's' && path[7] == 'u' &&
+        path[8] == '\0')
+        return 1;
+    
+    // /bin/su
+    if (path[0] == '/' && path[1] == 'b' && path[2] == 'i' && path[3] == 'n' &&
+        path[4] == '/' && path[5] == 's' && path[6] == 'u' && path[7] == '\0')
+        return 1;
+    
+    // /su/bin/su (SuperSU/Magisk)
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'u' && path[3] == '/' &&
+        path[4] == 'b' && path[5] == 'i' && path[6] == 'n' && path[7] == '/' &&
+        path[8] == 's' && path[9] == 'u' && path[10] == '\0')
+        return 1;
+    
+    // /data/adb/magisk/su (Magisk)
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'a' && path[3] == 't' &&
+        path[4] == 'a' && path[5] == '/' && path[6] == 'a' && path[7] == 'd' &&
+        path[8] == 'b' && path[9] == '/' && path[10] == 'm' && path[11] == 'a' &&
+        path[12] == 'g' && path[13] == 'i' && path[14] == 's' && path[15] == 'k' &&
+        path[16] == '/' && path[17] == 's' && path[18] == 'u' && path[19] == '\0')
+        return 1;
+    
+    // /debug_ramdisk/su
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'b' &&
+        path[4] == 'u' && path[5] == 'g' && path[6] == '_' && path[7] == 'r' &&
+        path[8] == 'a' && path[9] == 'm' && path[10] == 'd' && path[11] == 'i' &&
+        path[12] == 's' && path[13] == 'k' && path[14] == '/' && path[15] == 's' &&
+        path[16] == 'u' && path[17] == '\0')
+        return 1;
+    
+    // /usr/bin/su
+    if (path[0] == '/' && path[1] == 'u' && path[2] == 's' && path[3] == 'r' &&
+        path[4] == '/' && path[5] == 'b' && path[6] == 'i' && path[7] == 'n' &&
+        path[8] == '/' && path[9] == 's' && path[10] == 'u' && path[11] == '\0')
+        return 1;
+    
+    // Full path matching for common sudo locations
+    // /usr/bin/sudo
+    if (path[0] == '/' && path[1] == 'u' && path[2] == 's' && path[3] == 'r' &&
+        path[4] == '/' && path[5] == 'b' && path[6] == 'i' && path[7] == 'n' &&
+        path[8] == '/' && path[9] == 's' && path[10] == 'u' && path[11] == 'd' &&
+        path[12] == 'o' && path[13] == '\0')
+        return 2;
+    
+    // /bin/sudo
+    if (path[0] == '/' && path[1] == 'b' && path[2] == 'i' && path[3] == 'n' &&
+        path[4] == '/' && path[5] == 's' && path[6] == 'u' && path[7] == 'd' &&
+        path[8] == 'o' && path[9] == '\0')
+        return 2;
+    
+    // /system/bin/sudo
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'b' && path[9] == 'i' && path[10] == 'n' && path[11] == '/' &&
+        path[12] == 's' && path[13] == 'u' && path[14] == 'd' && path[15] == 'o' &&
+        path[16] == '\0')
+        return 2;
+    
+    // /system/xbin/sudo
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' &&
+        path[4] == 't' && path[5] == 'e' && path[6] == 'm' && path[7] == '/' &&
+        path[8] == 'x' && path[9] == 'b' && path[10] == 'i' && path[11] == 'n' &&
+        path[12] == '/' && path[13] == 's' && path[14] == 'u' && path[15] == 'd' &&
+        path[16] == 'o' && path[17] == '\0')
+        return 2;
+    
+    return 0;
+}
+
+// Result codes for su/sudo alert
+#define SU_SUDO_RESULT_ATTEMPTED    0  // Attempt detected at syscall entry (outcome unknown)
+#define SU_SUDO_RESULT_SUCCESSFUL   1  // Execution succeeded (retval == 0 at exit)
+#define SU_SUDO_RESULT_DENIED       2  // Permission denied (EACCES/-13 or EPERM/-1)
+#define SU_SUDO_RESULT_NOT_FOUND    3  // File not found (ENOENT/-2)
+#define SU_SUDO_RESULT_FAILED       4  // Other failure
 
 // Access type constants for SELinux protected resource access alert
 #define ACCESS_TYPE_READ    1
@@ -1802,6 +1941,56 @@ struct bpf_raw_tracepoint_args *ctx
         if (get_config(CONFIG_NEW_PID_FILTER)) {
             bpf_map_update_elem(&new_pids_map, &pid, &pid, BPF_ANY);
         }
+        
+        // SU/SUDO DETECTION AT SYSCALL ENTRY - catches attempts before SELinux denies them
+        // This runs BEFORE should_trace() so we detect attempts from all processes including untrusted_app
+        if (event_chosen(SU_SUDO_ALERT)) {
+            // For execve: args[0] = filename (USER-SPACE pointer)
+            // For execveat: args[1] = filename (args[0] = dirfd)
+            char *filename_ptr = (id == SYS_EXECVE) ? 
+                (char *)args_tmp.args[0] : (char *)args_tmp.args[1];
+            
+            if (filename_ptr != NULL) {
+                // Read filename from USER SPACE into local buffer
+                char filename_buf[64];
+                __builtin_memset(filename_buf, 0, sizeof(filename_buf));
+                
+                // Try bpf_probe_read_user_str first (kernel 5.x+), then fallback to bpf_probe_read_str
+                int len = bpf_probe_read_user_str(filename_buf, sizeof(filename_buf), filename_ptr);
+                if (len <= 0) {
+                    // Fallback for older kernels where bpf_probe_read_str works for user space
+                    len = bpf_probe_read_str(filename_buf, sizeof(filename_buf), filename_ptr);
+                }
+                
+                if (len > 0) {
+                    // Check if it's su or sudo using the kernel-space buffer we just populated
+                    int su_sudo_type = is_su_sudo_cmd(filename_buf);
+                    if (su_sudo_type > 0) {
+                        buf_t *submit_p = get_buf(SUBMIT_BUF_IDX);
+                        if (submit_p != NULL) {
+                            set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+                            
+                            // Use retval=0 as this is entry time, actual result unknown
+                            context_t context = init_and_save_context(ctx, submit_p, SU_SUDO_ALERT, 3 /*argnum*/, 0 /*ret*/);
+                            
+                            u64 *su_sudo_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+                            if (su_sudo_tags) {
+                                // Arg 0: command_type (1=su, 2=sudo)
+                                u32 cmd_type = (u32)su_sudo_type;
+                                // Arg 1: pathname (use our kernel-space copy)
+                                // Arg 2: result (0=attempted - outcome not yet known at entry)
+                                u32 result = SU_SUDO_RESULT_ATTEMPTED;
+                                
+                                save_to_submit_buf(submit_p, &cmd_type, sizeof(u32), UINT_T, DEC_ARG(0, *su_sudo_tags));
+                                save_str_to_buf(submit_p, (void *)filename_buf, DEC_ARG(1, *su_sudo_tags));
+                                save_to_submit_buf(submit_p, &result, sizeof(u32), UINT_T, DEC_ARG(2, *su_sudo_tags));
+                                events_perf_submit(ctx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (!should_trace())
@@ -2442,6 +2631,32 @@ int BPF_KPROBE(trace_security_bprm_check)
             save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(2, *selinux_tags));
             save_str_to_buf(submit_p, (void *)empty_str, DEC_ARG(3, *selinux_tags)); // No value available at this point
             events_perf_submit(ctx);
+        }
+    }
+    
+    // SU/SUDO DETECTION AT security_bprm_check - catches successful executions
+    // that passed SELinux checks. The path is read from kernel buffer (reliable).
+    // Note: syscall entry detection (in sys_enter) catches blocked attempts.
+    if (event_chosen(SU_SUDO_ALERT)) {
+        int su_sudo_type = is_su_sudo_cmd(&string_p->buf[*off]);
+        if (su_sudo_type > 0) {
+            // Reset buffer for the su/sudo alert
+            set_buf_off(SUBMIT_BUF_IDX, sizeof(context_t));
+            context.eventid = SU_SUDO_ALERT;
+            context.argnum = 3;
+            context.retval = 0;
+            save_context_to_buf(submit_p, (void*)&context);
+            
+            u64 *su_sudo_tags = bpf_map_lookup_elem(&params_names_map, &context.eventid);
+            if (su_sudo_tags) {
+                // At security_bprm_check, the execution passed SELinux -> successful
+                u32 cmd_type = (u32)su_sudo_type;
+                u32 result = SU_SUDO_RESULT_SUCCESSFUL;
+                save_to_submit_buf(submit_p, &cmd_type, sizeof(u32), UINT_T, DEC_ARG(0, *su_sudo_tags));
+                save_str_to_buf(submit_p, (void *)&string_p->buf[*off], DEC_ARG(1, *su_sudo_tags));
+                save_to_submit_buf(submit_p, &result, sizeof(u32), UINT_T, DEC_ARG(2, *su_sudo_tags));
+                events_perf_submit(ctx);
+            }
         }
     }
     

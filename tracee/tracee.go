@@ -1937,6 +1937,13 @@ func (t *Tracee) prepareArgsForPrint(ctx *context, args map[argTag]interface{}) 
 		if retval, isInt32 := args[t.EncParamName[ctx.EventID%2]["retval"]].(int32); isInt32 {
 			args[t.EncParamName[ctx.EventID%2]["retval"]] = PrintSELinuxResourceAccessRetval(retval)
 		}
+	case SuSudoAlertEventID:
+		if cmdType, isUint32 := args[t.EncParamName[ctx.EventID%2]["command_type"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["command_type"]] = PrintSuSudoCommandType(cmdType)
+		}
+		if result, isUint32 := args[t.EncParamName[ctx.EventID%2]["result"]].(uint32); isUint32 {
+			args[t.EncParamName[ctx.EventID%2]["result"]] = PrintSuSudoResult(result)
+		}
 	case CloneEventID:
 		if flags, isUint64 := args[t.EncParamName[ctx.EventID%2]["flags"]].(uint64); isUint64 {
 			args[t.EncParamName[ctx.EventID%2]["flags"]] = PrintCloneFlags(flags)

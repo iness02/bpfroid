@@ -822,3 +822,42 @@ func PrintSELinuxRepeatedDenialCooldownState(cooldownActive bool) string {
 	}
 	return "ALERT_TRIGGERED"
 }
+
+// PrintSuSudoCommandType prints the command type (su or sudo)
+// Command types: 1=su, 2=sudo
+func PrintSuSudoCommandType(cmdType uint32) string {
+	switch cmdType {
+	case 1:
+		return "su"
+	case 2:
+		return "sudo"
+	default:
+		return fmt.Sprintf("unknown(%d)", cmdType)
+	}
+}
+
+// PrintSuSudoResult prints the result of the su/sudo execution attempt
+// Result codes: 0=attempted, 1=successful, 2=permission_denied, 3=not_found, 4=failed
+func PrintSuSudoResult(result uint32) string {
+	switch result {
+	case 0:
+		return "attempted"
+	case 1:
+		return "successful"
+	case 2:
+		return "permission_denied"
+	case 3:
+		return "not_found"
+	case 4:
+		return "failed"
+	default:
+		return fmt.Sprintf("unknown(%d)", result)
+	}
+}
+
+// PrintSuSudoAlert returns the alert message for su/sudo command execution
+func PrintSuSudoAlert(cmdType uint32, pathname string, result uint32) string {
+	cmdName := PrintSuSudoCommandType(cmdType)
+	resultStr := PrintSuSudoResult(result)
+	return fmt.Sprintf("Privilege escalation attempt: %s command %s (%s)", cmdName, resultStr, pathname)
+}
