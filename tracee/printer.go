@@ -1,8 +1,8 @@
 package tracee
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -12,10 +12,9 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 	_ "time/tzdata"
-	"text/template"
-
 
 	"github.com/aquasecurity/tracee/tracee/external"
 )
@@ -100,10 +99,9 @@ func initDeviceLocation() {
 
 func newEventPrinter(kind string, containerMode bool, eot bool, out io.WriteCloser, err io.WriteCloser) (eventPrinter, error) {
 	if bootTime.IsZero() {
-	initBootTime()
-	initDeviceLocation()
-
-}
+		initBootTime()
+		initDeviceLocation()
+	}
 	var res eventPrinter
 	var initError error
 	switch {

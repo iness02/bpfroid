@@ -421,6 +421,11 @@ func (t *Tracee) printEvent(done <-chan struct{}, in <-chan external.Event) (<-c
 		for printEvent := range in {
 			t.stats.eventCounter.Increment()
 			t.printer.Print(printEvent)
+			if t.periodicJSONLogger != nil {
+				if err := t.periodicJSONLogger.WriteEvent(printEvent); err != nil {
+					errc <- err
+				}
+			}
 		}
 	}()
 	return errc, nil

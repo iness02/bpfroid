@@ -256,6 +256,7 @@ type Tracee struct {
 	noCodeHooks []hookDescriptor
 	// SELinux denial tracking
 	selinuxDenialTracker *SELinuxDenialTracker
+	periodicJSONLogger   *periodicJSONLogger
 }
 
 type counter int32
@@ -462,6 +463,12 @@ func New(cfg TraceeConfig) (*Tracee, error) {
 		return nil, err
 	}
 	t.printer = printObj
+	periodicLogger, err := newPeriodicJSONLogger(bpfroidPeriodicLogDir, bpfroidPeriodicLogInterval, deviceID)
+	if err != nil {
+		printObj.Close()
+		return nil, err
+	}
+	t.periodicJSONLogger = periodicLogger
 	t.eventsToTrace = make(map[int32]bool, len(t.config.Filter.EventsToTrace))
 	for _, e := range t.config.Filter.EventsToTrace {
 		// Map value is true iff events requested by the user
@@ -1623,6 +1630,11 @@ func (t *Tracee) Run() error {
 func (t *Tracee) Close() {
 	if t.bpfModule != nil {
 		t.bpfModule.Close()
+	}
+	if t.periodicJSONLogger != nil {
+		if err := t.periodicJSONLogger.Close(); err != nil {
+			t.printer.Error(err)
+		}
 	}
 	t.printer.Close()
 }

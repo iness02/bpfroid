@@ -3,6 +3,9 @@
     "api": [],
 
     "syscalls": [
+        {
+          "name": "execve"
+        }
     ],
 
     "uprobes": [],
