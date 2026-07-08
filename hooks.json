@@ -2,11 +2,7 @@
   "hookConfigs": {
     "api": [],
 
-    "syscalls": [
-        {
-          "name": "execve"
-        }
-    ],
+    "syscalls": [ ],
 
     "uprobes": [],
     

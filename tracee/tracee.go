@@ -257,6 +257,7 @@ type Tracee struct {
 	// SELinux denial tracking
 	selinuxDenialTracker *SELinuxDenialTracker
 	periodicJSONLogger   *periodicJSONLogger
+	rtsForwarder         *rtsForwarder
 }
 
 type counter int32
@@ -469,6 +470,7 @@ func New(cfg TraceeConfig) (*Tracee, error) {
 		return nil, err
 	}
 	t.periodicJSONLogger = periodicLogger
+	t.rtsForwarder = newRTSForwarderFromEnv()
 	t.eventsToTrace = make(map[int32]bool, len(t.config.Filter.EventsToTrace))
 	for _, e := range t.config.Filter.EventsToTrace {
 		// Map value is true iff events requested by the user
@@ -1633,6 +1635,11 @@ func (t *Tracee) Close() {
 	}
 	if t.periodicJSONLogger != nil {
 		if err := t.periodicJSONLogger.Close(); err != nil {
+			t.printer.Error(err)
+		}
+	}
+	if t.rtsForwarder != nil {
+		if err := t.rtsForwarder.Close(); err != nil {
 			t.printer.Error(err)
 		}
 	}

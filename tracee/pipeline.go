@@ -426,6 +426,11 @@ func (t *Tracee) printEvent(done <-chan struct{}, in <-chan external.Event) (<-c
 					errc <- err
 				}
 			}
+			if t.rtsForwarder != nil {
+				if err := t.rtsForwarder.Forward(printEvent); err != nil {
+					errc <- err
+				}
+			}
 		}
 	}()
 	return errc, nil
